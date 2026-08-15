@@ -244,7 +244,9 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		params.temperature = options?.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
+	// GitHub Copilot endpoints reject the service_tier parameter entirely
+	// (400 "service_tier is not supported"), so omit it for Copilot models.
+	if (options?.serviceTier !== undefined && model.provider !== "github-copilot") {
 		params.service_tier = options.serviceTier;
 	}
 
