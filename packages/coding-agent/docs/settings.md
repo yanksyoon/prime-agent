@@ -234,9 +234,11 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 |---------|------|---------|-------------|
 | `markdown.codeBlockIndent` | string | `"  "` | Indentation for code blocks |
 
-### External Memory
+### Graphiti External Memory
 
-External memory is opt-in. When enabled, the default capture mode is **explicit**: memory is written only when the agent invokes the memory tool. Other capture modes can be selected as the Graphiti integration matures.
+Graphiti configuration is reserved for the external provider integration and is currently experimental. The built-in `/memory` commands manage local harness memory instead; enabling this section does not configure or start a Graphiti service.
+
+When the Graphiti integration is available, the default capture mode is **explicit**: memory is written only when the agent invokes the memory tool. Other capture modes can be selected as the integration matures.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -263,6 +265,21 @@ Example:
 ```
 
 The explicit mode is designed to minimize token use and avoid storing noisy or sensitive tool output.
+
+### Harness Memory
+
+The built-in memory extension provides explicit, local, file-backed memory without a network dependency. It is separate from the experimental Graphiti settings above and is scoped to the current persisted session, like other local harness state.
+
+| Command | Description |
+|---------|-------------|
+| `/memory status` | Show the local store and its path |
+| `/memory list [query]` | List or search memories |
+| `/memory remember <text>` | Save a memory explicitly |
+| `/memory show <id>` | Show one memory |
+| `/memory update <id> :: <title> :: <content>` | Update one memory |
+| `/memory forget <id>` | Delete a memory after confirmation |
+
+The agent can also use the `memory_remember` tool for explicit capture. Recalled memories are limited to relevant entries and are labeled as local memory. A normal persisted session is required; in-memory sessions cannot store local harness memory.
 
 ### Resources
 

@@ -112,7 +112,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			noTools: "builtin",
 		});
 
-		expect(session.getActiveToolNames()).toEqual([]);
+		expect(session.getActiveToolNames().sort()).toEqual(["jira_time_log_external", "memory_remember"]);
 		expect(session.systemPrompt).not.toContain("Available tools:");
 		expect(session.systemPrompt).not.toContain("- ipython:");
 		session.dispose();

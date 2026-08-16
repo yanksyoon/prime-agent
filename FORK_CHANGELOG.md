@@ -5,6 +5,9 @@ Upstream changes remain documented in `packages/coding-agent/CHANGELOG.md`; do n
 
 ## Unreleased
 
+- Added local harness memory commands and explicit agent memory capture for persisted sessions.
+- Removed the non-functional Graphiti memory controls from the interactive settings menu.
+
 ## [0.7.3] - 2026-08-16
 
 - Bundled the timing extension so fork installations load it by default.
