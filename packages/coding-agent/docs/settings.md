@@ -281,12 +281,14 @@ The Graphiti extension runs `graphiti-core` in Prime Agent's Python kernel virtu
 
 | Command | Description |
 |---------|-------------|
-| `/memory status` | Show Graphiti configuration without contacting Neo4j |
-| `/memory doctor` | Check Neo4j connectivity and Graphiti initialization |
-| `/memory list` | List recent episodes in the workspace |
-| `/memory search <query>` | Search Graphiti facts |
-| `/memory remember <text>` | Add an explicit episode |
-| `/memory forget <episode-id>` | Delete an episode after confirmation |
+| `/memory help` | Show setup, commands, examples, and requirements |
+| `/memory status` | Show configuration, credentials, and readiness |
+| `/memory setup` | Configure Neo4j and Graphiti interactively |
+| `/memory doctor` | Check Neo4j connectivity, credentials, and indexes |
+| `/memory list` | List recent memories in the workspace |
+| `/memory search <query>` | Search relevant Graphiti facts |
+| `/memory remember <text>` | Save an explicit memory |
+| `/memory forget <memory-id>` | Delete a memory after confirmation |
 
 Graphiti recall runs before an agent turn and injects only relevant facts up to `memory.maxRecallTokens`. Automatic turn and session-end capture are not enabled yet; explicit capture is the only supported mode.
 

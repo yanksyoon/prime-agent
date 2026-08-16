@@ -52,10 +52,16 @@ function settings(overrides: Partial<SettingsSnapshot> = {}): SettingsSnapshot {
 	};
 }
 
-function createContext() {
+function createContext(inputs: string[] = []) {
 	const notifications: string[] = [];
 	return {
-		ctx: { ui: { notify: (message: string) => notifications.push(message) } },
+		ctx: {
+			hasUI: true,
+			ui: {
+				notify: (message: string) => notifications.push(message),
+				input: async () => inputs.shift(),
+			},
+		},
 		notifications,
 	};
 }
@@ -80,7 +86,8 @@ describe("Graphiti memory extension", () => {
 		createMemoryExtension(() => state)(pi);
 
 		await commands.get("memory")!.handler("status", ctx);
-		expect(notifications[0]).toContain("Graphiti memory: configured");
+		expect(notifications[0]).toContain("Status: Not ready");
+		expect(notifications[0]).toContain("GRAPHITI_NEO4J_PASSWORD");
 		expect(notifications[0]).toContain("bolt://localhost:7687");
 	});
 
@@ -92,5 +99,32 @@ describe("Graphiti memory extension", () => {
 			{},
 		);
 		expect(result).toBeUndefined();
+	});
+	it("provides actionable help and guided setup", async () => {
+		const state = settings();
+		const { pi, commands } = createMockPi();
+		const { ctx, notifications } = createContext([
+			"bolt://neo4j.example:7687",
+			"my-project",
+			"neo4j",
+			"NEO4J_PASSWORD",
+			"gpt-4o-mini",
+			"",
+			"GRAPHITI_KEY",
+			"text-embedding-3-small",
+		]);
+		createMemoryExtension(
+			() => state,
+			(updates) => Object.assign(state, updates),
+		)(pi);
+
+		await commands.get("memory")!.handler("help", ctx);
+		expect(notifications[0]).toContain("/memory setup");
+		expect(notifications[0]).toContain("/memory remember <text>");
+		await commands.get("memory")!.handler("setup", ctx);
+		expect(state.enabled).toBe(true);
+		expect(state.endpoint).toBe("bolt://neo4j.example:7687");
+		expect(state.neo4jPasswordEnv).toBe("NEO4J_PASSWORD");
+		expect(notifications.at(-1)).toContain("settings saved globally");
 	});
 });

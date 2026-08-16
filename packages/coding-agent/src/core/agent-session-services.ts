@@ -208,7 +208,10 @@ export async function createAgentSessionServices(
 		: [
 				createHerdrAgentStateExtension(() => resourceLoader.getLoadedExtensionPaths()),
 				jiraTimeExtension,
-				createMemoryExtension(() => settingsManager.getMemorySettings()),
+				createMemoryExtension(
+					() => settingsManager.getMemorySettings(),
+					(settings) => settingsManager.updateMemorySettings(settings),
+				),
 			];
 	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),

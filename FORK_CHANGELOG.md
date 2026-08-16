@@ -6,6 +6,7 @@ Upstream changes remain documented in `packages/coding-agent/CHANGELOG.md`; do n
 ## Unreleased
 
 - Added embedded Graphiti memory commands, explicit episode capture, Neo4j health checks, and bounded recall.
+- Improved `/memory` help, setup guidance, readiness status, autocomplete, and actionable diagnostics.
 - Removed the non-functional Graphiti memory controls from the interactive settings menu.
 
 ## [0.7.3] - 2026-08-16
