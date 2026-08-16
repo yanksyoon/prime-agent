@@ -236,21 +236,26 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 
 ### Graphiti External Memory
 
-Graphiti configuration is reserved for the external provider integration and is currently experimental. The built-in `/memory` commands manage local harness memory instead; enabling this section does not configure or start a Graphiti service.
-
-When the Graphiti integration is available, the default capture mode is **explicit**: memory is written only when the agent invokes the memory tool. Other capture modes can be selected as the integration matures.
+Graphiti memory uses the embedded `graphiti-core` client and a Neo4j database. It is opt-in and uses explicit capture by default. Graphiti performs entity extraction and embedding through OpenAI-compatible APIs; configure those separately from Prime Agent's conversational model.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `memory.enabled` | boolean | `false` | Enable an external memory provider |
-| `memory.provider` | string | - | External provider (`"graphiti"`) |
-| `memory.captureMode` | string | `"explicit"` | `"explicit"`, `"session-end"`, or `"turn"` |
-| `memory.endpoint` | string | - | Graphiti service endpoint |
-| `memory.workspace` | string | - | Provider namespace |
-| `memory.maxRecallTokens` | number | `1200` | Maximum memory context injected into a response |
-| `memory.includeToolOutput` | boolean | `false` | Include tool output during automatic capture |
+| `memory.enabled` | boolean | `false` | Enable Graphiti memory |
+| `memory.provider` | string | - | Must be `"graphiti"` |
+| `memory.captureMode` | string | `"explicit"` | `"explicit"`; automatic modes are reserved for a later release |
+| `memory.endpoint` | string | - | Neo4j Bolt URI, for example `"bolt://localhost:7687"` |
+| `memory.workspace` | string | `"prime-agent"` | Graphiti `group_id` namespace |
+| `memory.maxRecallTokens` | number | `1200` | Maximum recalled memory context |
+| `memory.neo4jUser` | string | `"neo4j"` | Neo4j username |
+| `memory.neo4jPasswordEnv` | string | `"GRAPHITI_NEO4J_PASSWORD"` | Environment variable containing the Neo4j password |
+| `memory.llmModel` | string | - | OpenAI-compatible model used for Graphiti extraction |
+| `memory.llmBaseUrl` | string | provider default | OpenAI-compatible extraction API base URL |
+| `memory.llmApiKeyEnv` | string | `"GRAPHITI_LLM_API_KEY"` | Environment variable containing the extraction API key |
+| `memory.embeddingModel` | string | `"text-embedding-3-small"` | Embedding model |
+| `memory.embeddingBaseUrl` | string | `memory.llmBaseUrl` | OpenAI-compatible embedding API base URL |
+| `memory.embeddingApiKeyEnv` | string | `memory.llmApiKeyEnv` | Environment variable containing the embedding API key |
 
-Example:
+Example settings:
 
 ```json
 {
@@ -258,28 +263,32 @@ Example:
     "enabled": true,
     "provider": "graphiti",
     "captureMode": "explicit",
-    "endpoint": "http://localhost:8000",
-    "workspace": "prime-agent"
+    "endpoint": "bolt://localhost:7687",
+    "workspace": "prime-agent",
+    "llmModel": "gpt-4o-mini"
   }
 }
 ```
 
-The explicit mode is designed to minimize token use and avoid storing noisy or sensitive tool output.
+Set secrets outside `settings.json`:
 
-### Harness Memory
+```bash
+export GRAPHITI_NEO4J_PASSWORD="..."
+export GRAPHITI_LLM_API_KEY="..."
+```
 
-The built-in memory extension provides explicit, local, file-backed memory without a network dependency. It is separate from the experimental Graphiti settings above and is scoped to the current persisted session, like other local harness state.
+The Graphiti extension runs `graphiti-core` in Prime Agent's Python kernel virtualenv. Use `/memory doctor` to initialize/check Neo4j constraints and verify the configured Graphiti model and credentials.
 
 | Command | Description |
 |---------|-------------|
-| `/memory status` | Show the local store and its path |
-| `/memory list [query]` | List or search memories |
-| `/memory remember <text>` | Save a memory explicitly |
-| `/memory show <id>` | Show one memory |
-| `/memory update <id> :: <title> :: <content>` | Update one memory |
-| `/memory forget <id>` | Delete a memory after confirmation |
+| `/memory status` | Show Graphiti configuration without contacting Neo4j |
+| `/memory doctor` | Check Neo4j connectivity and Graphiti initialization |
+| `/memory list` | List recent episodes in the workspace |
+| `/memory search <query>` | Search Graphiti facts |
+| `/memory remember <text>` | Add an explicit episode |
+| `/memory forget <episode-id>` | Delete an episode after confirmation |
 
-The agent can also use the `memory_remember` tool for explicit capture. Recalled memories are limited to relevant entries and are labeled as local memory. A normal persisted session is required; in-memory sessions cannot store local harness memory.
+Graphiti recall runs before an agent turn and injects only relevant facts up to `memory.maxRecallTokens`. Automatic turn and session-end capture are not enabled yet; explicit capture is the only supported mode.
 
 ### Resources
 
