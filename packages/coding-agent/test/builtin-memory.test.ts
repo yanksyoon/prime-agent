@@ -108,6 +108,7 @@ describe("Graphiti memory extension", () => {
 			"my-project",
 			"neo4j",
 			"NEO4J_PASSWORD",
+			"~/.prime/agent/secrets/graphiti-test-password",
 			"gpt-4o-mini",
 			"",
 			"GRAPHITI_KEY",
@@ -125,6 +126,6 @@ describe("Graphiti memory extension", () => {
 		expect(state.enabled).toBe(true);
 		expect(state.endpoint).toBe("bolt://neo4j.example:7687");
 		expect(state.neo4jPasswordEnv).toBe("NEO4J_PASSWORD");
-		expect(notifications.at(-1)).toContain("settings saved globally");
+		expect(notifications.some((message) => message.includes("Graphiti setup is incomplete"))).toBe(true);
 	});
 });
