@@ -17,7 +17,10 @@ type MemorySettingsSnapshot = MemorySettings & {
 	neo4jUser: string;
 	neo4jPasswordEnv: string;
 	llmApiKeyEnv: string;
+	llmSmallModel?: string;
+	llmStructuredOutputMode?: "json_schema" | "json_object";
 	embeddingModel: string;
+	embeddingDim: number;
 	embeddingApiKeyEnv: string;
 };
 
@@ -82,6 +85,38 @@ function runCommand(command: string, args: string[]): Promise<CommandResult> {
 
 function expandHome(path: string): string {
 	return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
+
+type OllamaProbe = { baseUrl: string; models: string[]; embeddingModel?: string };
+
+async function detectOllama(): Promise<OllamaProbe | undefined> {
+	const configured = process.env.OLLAMA_HOST?.trim();
+	const candidates = [configured, "http://127.0.0.1:11434", "http://localhost:11434", "http://ollama:11434"].filter(
+		Boolean,
+	);
+	for (const candidate of candidates) {
+		const origin = candidate!.startsWith("http") ? candidate! : `http://${candidate!}`;
+		try {
+			const response = await fetch(`${origin.replace(/\/$/, "")}/api/tags`, { signal: AbortSignal.timeout(700) });
+			if (!response.ok) continue;
+			const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+			const models = (payload.models ?? [])
+				.map((model) => model.name)
+				.filter((name): name is string => Boolean(name));
+			return {
+				baseUrl: `${origin.replace(/\/$/, "")}/v1`,
+				models,
+				embeddingModel: models.find((model) => model.includes("nomic-embed-text")),
+			};
+		} catch {
+			// Continue probing other local/network endpoints.
+		}
+	}
+	return undefined;
+}
+
+function isOllamaUrl(url: string | undefined): boolean {
+	return Boolean(url && /(?:localhost|127\.0\.0\.1|ollama).*11434|:11434(?:\/|$)/i.test(url));
 }
 
 function secretFileAvailable(path: string | undefined): boolean {
@@ -245,7 +280,11 @@ function statusText(settings: MemorySettingsSnapshot): string {
 		: secretFileAvailable(settings.neo4jPasswordFile)
 			? `set in ${expandHome(settings.neo4jPasswordFile!)}`
 			: "missing";
-	const llmKey = process.env[settings.llmApiKeyEnv] ? "set" : "missing";
+	const llmKey = process.env[settings.llmApiKeyEnv]
+		? "set"
+		: isOllamaUrl(settings.llmBaseUrl)
+			? "not required (Ollama)"
+			: "missing";
 	const missingSecrets = [
 		neo4jPassword === "missing" ? settings.neo4jPasswordEnv : undefined,
 		llmKey === "missing" ? settings.llmApiKeyEnv : undefined,
@@ -296,6 +335,13 @@ export function createMemoryExtension(
 				return;
 			}
 			const current = getSettings();
+			const ollama = await detectOllama();
+			if (ollama) {
+				ctx.ui.notify(
+					`Detected Ollama at ${ollama.baseUrl}. Setup will use it when compatible models are available.`,
+					"info",
+				);
+			}
 			const ask = async (label: string, fallback: string): Promise<string | undefined> => {
 				const value = await ctx.ui.input(label, fallback);
 				if (value === undefined) return undefined;
@@ -320,16 +366,22 @@ export function createMemoryExtension(
 				endpoint,
 				neo4jPasswordFile,
 			});
-			const llmModel = await ask("Graphiti extraction model", current.llmModel || "gpt-4o-mini");
+			const llmModel = await ask(
+				"Graphiti extraction model",
+				current.llmModel || ollama?.models.find((model) => !model.includes("embed")) || "gpt-4o-mini",
+			);
 			if (llmModel === undefined) return;
 			const llmBaseUrl = await ask(
 				"Graphiti OpenAI-compatible base URL (use default for OpenAI)",
-				current.llmBaseUrl || "",
+				current.llmBaseUrl || ollama?.baseUrl || "",
 			);
 			if (llmBaseUrl === undefined) return;
 			const llmApiKeyEnv = await ask("Graphiti API key environment variable", current.llmApiKeyEnv);
 			if (llmApiKeyEnv === undefined) return;
-			const embeddingModel = await ask("Embedding model", current.embeddingModel || "text-embedding-3-small");
+			const embeddingModel = await ask(
+				"Embedding model",
+				current.embeddingModel || ollama?.embeddingModel || "text-embedding-3-small",
+			);
 			if (embeddingModel === undefined) return;
 			configureMemory({
 				enabled: true,
@@ -344,6 +396,9 @@ export function createMemoryExtension(
 				llmBaseUrl: llmBaseUrl || undefined,
 				llmApiKeyEnv,
 				embeddingModel,
+				embeddingDim: ollama && embeddingModel.includes("nomic") ? 768 : current.embeddingDim,
+				embeddingBaseUrl: ollama?.baseUrl,
+				llmStructuredOutputMode: ollama ? "json_object" : current.llmStructuredOutputMode,
 			});
 			const response = await runGraphiti(getSettings(), "doctor");
 			if (response.ok) {

@@ -12,6 +12,7 @@ type SettingsSnapshot = MemorySettings & {
 	neo4jPasswordEnv: string;
 	llmApiKeyEnv: string;
 	embeddingModel: string;
+	embeddingDim: number;
 	embeddingApiKeyEnv: string;
 };
 
@@ -47,6 +48,7 @@ function settings(overrides: Partial<SettingsSnapshot> = {}): SettingsSnapshot {
 		llmModel: "gpt-4o-mini",
 		llmApiKeyEnv: "GRAPHITI_LLM_API_KEY",
 		embeddingModel: "text-embedding-3-small",
+		embeddingDim: 1024,
 		embeddingApiKeyEnv: "GRAPHITI_LLM_API_KEY",
 		...overrides,
 	};

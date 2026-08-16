@@ -17,7 +17,9 @@ from typing import Any
 
 from graphiti_core import Graphiti
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
-from graphiti_core.llm_client import LLMConfig, OpenAIClient
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
 
 def _required(config: dict[str, Any], key: str, label: str) -> str:
@@ -56,28 +58,47 @@ def _secret(config: dict[str, Any], env_key: str, file_key: str, default_name: s
     raise RuntimeError(f"secret is not available from {display} or {file_key}")
 
 
+def _api_key(config: dict[str, Any], env_key: str, base_url_key: str) -> str:
+    try:
+        return _env(config, env_key, "GRAPHITI_LLM_API_KEY")
+    except RuntimeError:
+        base_url = str(config.get(base_url_key) or "").lower()
+        if "11434" in base_url or "ollama" in base_url:
+            return "ollama"
+        raise
+
+
 def _graphiti(config: dict[str, Any]) -> Graphiti:
     uri = _required(config, "endpoint", "memory.endpoint (Neo4j Bolt URI)")
     user = str(config.get("neo4jUser") or "neo4j")
     password = _secret(config, "neo4jPasswordEnv", "neo4jPasswordFile", "GRAPHITI_NEO4J_PASSWORD")
-    llm_api_key = _env(config, "llmApiKeyEnv", "GRAPHITI_LLM_API_KEY")
-    llm_model = _required(config, "llmModel", "memory.llmModel")
     llm_base_url = config.get("llmBaseUrl") or None
-    embedding_api_key = _env(config, "embeddingApiKeyEnv", config.get("llmApiKeyEnv") or "GRAPHITI_LLM_API_KEY")
+    llm_api_key = _api_key(config, "llmApiKeyEnv", "llmBaseUrl")
+    llm_model = _required(config, "llmModel", "memory.llmModel")
     embedding_base_url = config.get("embeddingBaseUrl") or llm_base_url
+    embedding_api_key = _api_key(config, "embeddingApiKeyEnv", "embeddingBaseUrl")
     embedding_model = str(config.get("embeddingModel") or "text-embedding-3-small")
-
-    llm_client = OpenAIClient(
-        LLMConfig(api_key=llm_api_key, model=llm_model, base_url=llm_base_url),
+    embedding_dim = int(config.get("embeddingDim") or (768 if "nomic" in embedding_model else 1024))
+    llm_config = LLMConfig(
+        api_key=llm_api_key,
+        model=llm_model,
+        small_model=str(config.get("llmSmallModel") or llm_model),
+        base_url=llm_base_url,
+    )
+    llm_client = OpenAIGenericClient(
+        config=llm_config,
+        structured_output_mode=str(config.get("llmStructuredOutputMode") or "json_schema"),
     )
     embedder = OpenAIEmbedder(
         OpenAIEmbedderConfig(
             api_key=embedding_api_key,
             base_url=embedding_base_url,
             embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
         ),
     )
-    return Graphiti(uri=uri, user=user, password=password, llm_client=llm_client, embedder=embedder)
+    cross_encoder = OpenAIRerankerClient(client=llm_client, config=llm_config)
+    return Graphiti(uri=uri, user=user, password=password, llm_client=llm_client, embedder=embedder, cross_encoder=cross_encoder)
 
 
 def _workspace(config: dict[str, Any]) -> str:

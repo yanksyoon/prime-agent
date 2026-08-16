@@ -250,9 +250,12 @@ Graphiti memory uses the embedded `graphiti-core` client and a Neo4j database. I
 | `memory.neo4jPasswordEnv` | string | `"GRAPHITI_NEO4J_PASSWORD"` | Environment variable containing the Neo4j password |
 | `memory.neo4jPasswordFile` | string | - | 0600 file containing the password for a setup-provisioned local Neo4j container |
 | `memory.llmModel` | string | - | OpenAI-compatible model used for Graphiti extraction |
+| `memory.llmSmallModel` | string | `memory.llmModel` | Smaller model used for Graphiti auxiliary extraction |
+| `memory.llmStructuredOutputMode` | string | `"json_schema"` | `"json_schema"` or `"json_object"`; Ollama commonly uses `"json_object"` |
 | `memory.llmBaseUrl` | string | provider default | OpenAI-compatible extraction API base URL |
 | `memory.llmApiKeyEnv` | string | `"GRAPHITI_LLM_API_KEY"` | Environment variable containing the extraction API key |
-| `memory.embeddingModel` | string | `"text-embedding-3-small"` | Embedding model |
+| `memory.embeddingModel` | string | `"text-embedding-3-small"` | Embedding model; Ollama commonly uses `nomic-embed-text` |
+| `memory.embeddingDim` | number | `1024` | Embedding dimension; `nomic-embed-text` uses `768` |
 | `memory.embeddingBaseUrl` | string | `memory.llmBaseUrl` | OpenAI-compatible embedding API base URL |
 | `memory.embeddingApiKeyEnv` | string | `memory.llmApiKeyEnv` | Environment variable containing the embedding API key |
 
@@ -278,7 +281,7 @@ export GRAPHITI_NEO4J_PASSWORD="..."
 export GRAPHITI_LLM_API_KEY="..."
 ```
 
-The Graphiti extension runs `graphiti-core` in Prime Agent's Python kernel virtualenv. `/memory setup` uses defaults for a local Neo4j instance and, when Docker or Podman is available, provisions a `prime-agent-graphiti-neo4j` container with a generated password stored in a 0600 file. It does not install Docker/Podman or collect API keys in a visible prompt. Set the configured Graphiti API-key environment variable before setup can complete. Use `/memory doctor` to initialize/check Neo4j constraints and verify the configured Graphiti model and credentials.
+The Graphiti extension runs `graphiti-core` in Prime Agent's Python kernel virtualenv. It uses Graphiti's `OpenAIGenericClient` for OpenAI-compatible providers and local servers. `/memory setup` probes Ollama at `OLLAMA_HOST`, `http://127.0.0.1:11434`, `http://localhost:11434`, and `http://ollama:11434`; when detected, it selects a local model, uses `json_object` structured output, and uses `nomic-embed-text` with 768-dimensional embeddings. `/memory setup` uses defaults for a local Neo4j instance and, when Docker or Podman is available, provisions a `prime-agent-graphiti-neo4j` container with a generated password stored in a 0600 file. It does not install Docker/Podman or collect API keys in a visible prompt. Set the configured Graphiti API-key environment variable before setup can complete. Use `/memory doctor` to initialize/check Neo4j constraints and verify the configured Graphiti model and credentials.
 
 | Command | Description |
 |---------|-------------|

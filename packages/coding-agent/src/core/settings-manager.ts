@@ -44,9 +44,12 @@ export interface MemorySettings {
 	neo4jPasswordEnv?: string; // default: "GRAPHITI_NEO4J_PASSWORD"
 	neo4jPasswordFile?: string; // optional 0600 file used by local Neo4j provisioning
 	llmModel?: string;
+	llmSmallModel?: string;
+	llmStructuredOutputMode?: "json_schema" | "json_object";
 	llmBaseUrl?: string;
 	llmApiKeyEnv?: string; // default: "GRAPHITI_LLM_API_KEY"
 	embeddingModel?: string; // default: "text-embedding-3-small"
+	embeddingDim?: number; // default: 1024; nomic-embed-text uses 768
 	embeddingBaseUrl?: string;
 	embeddingApiKeyEnv?: string; // defaults to llmApiKeyEnv
 }
@@ -919,9 +922,12 @@ export class SettingsManager {
 		neo4jPasswordEnv: string;
 		neo4jPasswordFile?: string;
 		llmModel?: string;
+		llmSmallModel?: string;
+		llmStructuredOutputMode?: "json_schema" | "json_object";
 		llmBaseUrl?: string;
 		llmApiKeyEnv: string;
 		embeddingModel: string;
+		embeddingDim: number;
 		embeddingBaseUrl?: string;
 		embeddingApiKeyEnv: string;
 	} {
@@ -939,9 +945,12 @@ export class SettingsManager {
 			neo4jPasswordEnv: memory?.neo4jPasswordEnv ?? "GRAPHITI_NEO4J_PASSWORD",
 			neo4jPasswordFile: memory?.neo4jPasswordFile,
 			llmModel: memory?.llmModel,
+			llmSmallModel: memory?.llmSmallModel,
+			llmStructuredOutputMode: memory?.llmStructuredOutputMode,
 			llmBaseUrl: memory?.llmBaseUrl,
 			llmApiKeyEnv,
 			embeddingModel: memory?.embeddingModel ?? "text-embedding-3-small",
+			embeddingDim: memory?.embeddingDim ?? 1024,
 			embeddingBaseUrl: memory?.embeddingBaseUrl,
 			embeddingApiKeyEnv: memory?.embeddingApiKeyEnv ?? llmApiKeyEnv,
 		};
