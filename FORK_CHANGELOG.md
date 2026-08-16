@@ -8,6 +8,7 @@ Upstream changes remain documented in `packages/coding-agent/CHANGELOG.md`; do n
 - Added embedded Graphiti memory commands, explicit episode capture, Neo4j health checks, and bounded recall.
 - Improved `/memory` help, setup guidance, readiness status, autocomplete, and actionable diagnostics.
 - Removed the non-functional Graphiti memory controls from the interactive settings menu.
+- Removed the built-in Jira time extension; Jira time tracking is provided by the external extension.
 
 ## [0.7.3] - 2026-08-16
 
