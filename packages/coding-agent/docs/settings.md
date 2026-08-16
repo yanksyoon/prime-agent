@@ -248,6 +248,7 @@ Graphiti memory uses the embedded `graphiti-core` client and a Neo4j database. I
 | `memory.maxRecallTokens` | number | `1200` | Maximum recalled memory context |
 | `memory.neo4jUser` | string | `"neo4j"` | Neo4j username |
 | `memory.neo4jPasswordEnv` | string | `"GRAPHITI_NEO4J_PASSWORD"` | Environment variable containing the Neo4j password |
+| `memory.neo4jPasswordFile` | string | - | 0600 file containing the password for a setup-provisioned local Neo4j container |
 | `memory.llmModel` | string | - | OpenAI-compatible model used for Graphiti extraction |
 | `memory.llmBaseUrl` | string | provider default | OpenAI-compatible extraction API base URL |
 | `memory.llmApiKeyEnv` | string | `"GRAPHITI_LLM_API_KEY"` | Environment variable containing the extraction API key |
@@ -277,7 +278,7 @@ export GRAPHITI_NEO4J_PASSWORD="..."
 export GRAPHITI_LLM_API_KEY="..."
 ```
 
-The Graphiti extension runs `graphiti-core` in Prime Agent's Python kernel virtualenv. Use `/memory doctor` to initialize/check Neo4j constraints and verify the configured Graphiti model and credentials.
+The Graphiti extension runs `graphiti-core` in Prime Agent's Python kernel virtualenv. `/memory setup` uses defaults for a local Neo4j instance and, when Docker or Podman is available, provisions a `prime-agent-graphiti-neo4j` container with a generated password stored in a 0600 file. It does not install Docker/Podman or collect API keys in a visible prompt. Set the configured Graphiti API-key environment variable before setup can complete. Use `/memory doctor` to initialize/check Neo4j constraints and verify the configured Graphiti model and credentials.
 
 | Command | Description |
 |---------|-------------|

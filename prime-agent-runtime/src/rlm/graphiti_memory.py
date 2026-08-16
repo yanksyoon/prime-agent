@@ -32,15 +32,34 @@ def _env(config: dict[str, Any], key: str, default_name: str | None = None) -> s
     if not isinstance(name, str) or not name.strip():
         raise RuntimeError(f"memory setting {key} must name an environment variable")
     value = os.environ.get(name.strip(), "").strip()
-    if not value:
-        raise RuntimeError(f"environment variable {name.strip()} is not set")
-    return value
+    if value:
+        return value
+    raise RuntimeError(f"environment variable {name.strip()} is not set")
+
+
+def _secret(config: dict[str, Any], env_key: str, file_key: str, default_name: str | None = None) -> str:
+    env_name = config.get(env_key) or default_name
+    if isinstance(env_name, str) and env_name.strip():
+        value = os.environ.get(env_name.strip(), "").strip()
+        if value:
+            return value
+    file_name = config.get(file_key)
+    if isinstance(file_name, str) and file_name.strip():
+        try:
+            with open(os.path.expanduser(file_name.strip()), encoding="utf-8") as secret_file:
+                value = secret_file.read().strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    display = env_name.strip() if isinstance(env_name, str) and env_name.strip() else file_key
+    raise RuntimeError(f"secret is not available from {display} or {file_key}")
 
 
 def _graphiti(config: dict[str, Any]) -> Graphiti:
     uri = _required(config, "endpoint", "memory.endpoint (Neo4j Bolt URI)")
     user = str(config.get("neo4jUser") or "neo4j")
-    password = _env(config, "neo4jPasswordEnv", "GRAPHITI_NEO4J_PASSWORD")
+    password = _secret(config, "neo4jPasswordEnv", "neo4jPasswordFile", "GRAPHITI_NEO4J_PASSWORD")
     llm_api_key = _env(config, "llmApiKeyEnv", "GRAPHITI_LLM_API_KEY")
     llm_model = _required(config, "llmModel", "memory.llmModel")
     llm_base_url = config.get("llmBaseUrl") or None

@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { Type } from "typebox";
 import { getPackageDir } from "../../../config.js";
@@ -59,6 +62,91 @@ function runtimeSourcePath(): string {
 	return join(packageDir, "dist", "prime-agent-runtime", "src");
 }
 
+type CommandResult = { code: number | null; stdout: string; stderr: string };
+
+function runCommand(command: string, args: string[]): Promise<CommandResult> {
+	return new Promise((resolve) => {
+		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		child.once("error", (error) => resolve({ code: null, stdout, stderr: error.message }));
+		child.once("close", (code) => resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() }));
+	});
+}
+
+function expandHome(path: string): string {
+	return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
+
+function secretFileAvailable(path: string | undefined): boolean {
+	return Boolean(path && existsSync(expandHome(path)));
+}
+
+async function ensureLocalNeo4j(ctx: ExtensionContext, settings: MemorySettingsSnapshot): Promise<string | undefined> {
+	if (settings.endpoint && settings.endpoint !== "bolt://localhost:7687") return settings.neo4jPasswordFile;
+	const runtime =
+		(await runCommand("docker", ["--version"])).code === 0
+			? "docker"
+			: (await runCommand("podman", ["--version"])).code === 0
+				? "podman"
+				: undefined;
+	if (!runtime) {
+		ctx.ui.notify("Docker or Podman was not found. Install one, then run /memory setup again.", "warning");
+		return undefined;
+	}
+	const name = "prime-agent-graphiti-neo4j";
+	const existing = await runCommand(runtime, ["ps", "-a", "--filter", `name=^/${name}$`, "--format", "{{.Names}}"]);
+	const passwordFile = expandHome(settings.neo4jPasswordFile || "~/.prime/agent/secrets/graphiti-neo4j-password");
+	if (existing.stdout === name) {
+		const running = await runCommand(runtime, ["ps", "--filter", `name=^/${name}$`, "--format", "{{.Names}}"]);
+		if (running.stdout !== name) {
+			const start = await runCommand(runtime, ["start", name]);
+			if (start.code !== 0) throw new Error(`Could not start existing Neo4j container: ${start.stderr}`);
+		}
+		if (secretFileAvailable(passwordFile)) return passwordFile;
+		ctx.ui.notify(
+			`Neo4j container ${name} is running, but its password file is missing. Set ${settings.neo4jPasswordEnv} to its password.`,
+			"warning",
+		);
+		return undefined;
+	}
+	const approved = await ctx.ui.confirm(
+		"Install local Neo4j",
+		"Start a Neo4j 5 container on localhost:7687 for Graphiti memory?",
+	);
+	if (!approved) {
+		ctx.ui.notify(
+			"Neo4j setup was cancelled. Configure an existing Neo4j endpoint and run /memory doctor.",
+			"warning",
+		);
+		return undefined;
+	}
+	const password = randomBytes(24).toString("base64url");
+	const result = await runCommand(runtime, [
+		"run",
+		"--name",
+		name,
+		"--publish",
+		"7474:7474",
+		"--publish",
+		"7687:7687",
+		"--env",
+		`NEO4J_AUTH=neo4j/${password}`,
+		"--detach",
+		"neo4j:5",
+	]);
+	if (result.code !== 0) throw new Error(`Could not start Neo4j: ${result.stderr || result.stdout}`);
+	mkdirSync(join(passwordFile, ".."), { recursive: true, mode: 0o700 });
+	writeFileSync(passwordFile, `${password}\n`, { mode: 0o600 });
+	return passwordFile;
+}
+
 function runGraphiti(
 	settings: MemorySettingsSnapshot,
 	operation: "doctor" | "search" | "remember" | "forget",
@@ -106,8 +194,8 @@ function itemText(item: GraphitiItem): string {
 }
 
 function formatGraphitiError(error: string): string {
-	if (error.includes("environment variable")) {
-		return `Graphiti is not ready: ${error}\nSet the variable, then run /memory doctor.`;
+	if (error.includes("environment variable") || error.includes("secret is not available")) {
+		return `Graphiti is not ready: ${error}\nSet the configured secret or password file, then run /memory doctor.`;
 	}
 	if (/(connect|connection|neo4j|bolt)/i.test(error)) {
 		return `Graphiti could not connect to Neo4j: ${error}\nCheck that Neo4j is running at the configured Bolt URI, then run /memory doctor.`;
@@ -126,7 +214,7 @@ function helpText(): string {
 		"",
 		"Commands:",
 		"  /memory status              Show configuration and readiness",
-		"  /memory setup               Configure Neo4j and Graphiti interactively",
+		"  /memory setup               Configure and provision Neo4j and Graphiti",
 		"  /memory doctor              Test Neo4j, credentials, and Graphiti indexes",
 		"  /memory list                List recent memories in the workspace",
 		"  /memory search <query>      Search Graphiti facts",
@@ -138,6 +226,10 @@ function helpText(): string {
 		"  /memory search package manager",
 		"  /memory forget 4f8c...",
 		"",
+		"Setup behavior:",
+		"  A local Neo4j container is provisioned when Docker or Podman is available.",
+		"  Setup never installs Docker/Podman or asks for secrets in a visible prompt.",
+		"",
 		"Required configuration:",
 		"  Neo4j Bolt URI and password",
 		"  OpenAI-compatible Graphiti LLM and embedding credentials",
@@ -148,7 +240,11 @@ function helpText(): string {
 
 function statusText(settings: MemorySettingsSnapshot): string {
 	const configuration = configError(settings);
-	const neo4jPassword = process.env[settings.neo4jPasswordEnv] ? "set" : "missing";
+	const neo4jPassword = process.env[settings.neo4jPasswordEnv]
+		? "set in environment"
+		: secretFileAvailable(settings.neo4jPasswordFile)
+			? `set in ${expandHome(settings.neo4jPasswordFile!)}`
+			: "missing";
 	const llmKey = process.env[settings.llmApiKeyEnv] ? "set" : "missing";
 	const missingSecrets = [
 		neo4jPassword === "missing" ? settings.neo4jPasswordEnv : undefined,
@@ -213,6 +309,17 @@ export function createMemoryExtension(
 			if (neo4jUser === undefined) return;
 			const neo4jPasswordEnv = await ask("Neo4j password environment variable", current.neo4jPasswordEnv);
 			if (neo4jPasswordEnv === undefined) return;
+			const defaultPasswordFile = current.neo4jPasswordFile || "~/.prime/agent/secrets/graphiti-neo4j-password";
+			const neo4jPasswordFile = await ask(
+				"Neo4j password file (created for a new local container)",
+				defaultPasswordFile,
+			);
+			if (neo4jPasswordFile === undefined) return;
+			const provisionedPasswordFile = await ensureLocalNeo4j(ctx, {
+				...current,
+				endpoint,
+				neo4jPasswordFile,
+			});
 			const llmModel = await ask("Graphiti extraction model", current.llmModel || "gpt-4o-mini");
 			if (llmModel === undefined) return;
 			const llmBaseUrl = await ask(
@@ -232,12 +339,21 @@ export function createMemoryExtension(
 				workspace,
 				neo4jUser,
 				neo4jPasswordEnv,
+				neo4jPasswordFile: provisionedPasswordFile || neo4jPasswordFile,
 				llmModel,
 				llmBaseUrl: llmBaseUrl || undefined,
 				llmApiKeyEnv,
 				embeddingModel,
 			});
-			ctx.ui.notify("Graphiti settings saved globally. Set the listed secrets, then run /memory doctor.", "info");
+			const response = await runGraphiti(getSettings(), "doctor");
+			if (response.ok) {
+				ctx.ui.notify(`Graphiti setup complete. Workspace ${response.workspace} is ready.`, "info");
+			} else {
+				ctx.ui.notify(
+					`Graphiti setup is incomplete.\n${formatGraphitiError(response.error || "Run /memory doctor for details.")}`,
+					"warning",
+				);
+			}
 		};
 
 		pi.on("before_agent_start", async (event: BeforeAgentStartEvent) => {

@@ -42,6 +42,7 @@ export interface MemorySettings {
 	includeToolOutput?: boolean; // default: false
 	neo4jUser?: string; // default: "neo4j"
 	neo4jPasswordEnv?: string; // default: "GRAPHITI_NEO4J_PASSWORD"
+	neo4jPasswordFile?: string; // optional 0600 file used by local Neo4j provisioning
 	llmModel?: string;
 	llmBaseUrl?: string;
 	llmApiKeyEnv?: string; // default: "GRAPHITI_LLM_API_KEY"
@@ -916,6 +917,7 @@ export class SettingsManager {
 		includeToolOutput: boolean;
 		neo4jUser: string;
 		neo4jPasswordEnv: string;
+		neo4jPasswordFile?: string;
 		llmModel?: string;
 		llmBaseUrl?: string;
 		llmApiKeyEnv: string;
@@ -935,6 +937,7 @@ export class SettingsManager {
 			includeToolOutput: memory?.includeToolOutput ?? false,
 			neo4jUser: memory?.neo4jUser ?? "neo4j",
 			neo4jPasswordEnv: memory?.neo4jPasswordEnv ?? "GRAPHITI_NEO4J_PASSWORD",
+			neo4jPasswordFile: memory?.neo4jPasswordFile,
 			llmModel: memory?.llmModel,
 			llmBaseUrl: memory?.llmBaseUrl,
 			llmApiKeyEnv,
