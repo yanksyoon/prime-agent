@@ -1,45 +1,107 @@
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { delimiter, join } from "node:path";
 import { Type } from "typebox";
-import {
-	applyRefinementProposal,
-	getHarnessStatePath,
-	getLocalHarnessStateDir,
-	type HarnessEntry,
-	type HarnessState,
-	loadHarnessState,
-	REFINEMENT_CUSTOM_TYPE,
-	type RefinementEdit,
-	saveHarnessState,
-} from "../../refinement/refinement.js";
+import { getPackageDir } from "../../../config.js";
+import { getKernelVenvDir } from "../../kernel/bootstrap.js";
+import type { MemorySettings } from "../../settings-manager.js";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "../types.js";
 
+type MemorySettingsSnapshot = MemorySettings & {
+	enabled: boolean;
+	captureMode: "explicit" | "session-end" | "turn";
+	maxRecallTokens: number;
+	includeToolOutput: boolean;
+	neo4jUser: string;
+	neo4jPasswordEnv: string;
+	llmApiKeyEnv: string;
+	embeddingModel: string;
+	embeddingApiKeyEnv: string;
+};
+
+type GraphitiItem = {
+	id: string;
+	name?: string;
+	title?: string;
+	fact?: string;
+	content?: string;
+	groupId?: string;
+	episodes?: string[];
+};
+
+type GraphitiResponse = {
+	ok: boolean;
+	error?: string;
+	workspace?: string;
+	items?: GraphitiItem[];
+	item?: GraphitiItem;
+	id?: string;
+};
+
 const MAX_RECALL_ENTRIES = 5;
-const MAX_RECALL_CHARS = 6_000;
 
-type MemoryRecord = { entry: HarnessEntry; id: string };
-
-function localStateDir(ctx: ExtensionContext): string {
-	const artifactDir = ctx.sessionManager.getSessionArtifactDir();
-	const stateDir = getLocalHarnessStateDir(artifactDir);
-	if (!stateDir) {
-		throw new Error("Memory requires a persisted session. Start a normal session before saving local memory.");
-	}
-	return stateDir;
+function configError(settings: MemorySettingsSnapshot): string | undefined {
+	if (!settings.enabled) return "Graphiti memory is disabled. Set memory.enabled to true.";
+	if (settings.provider !== "graphiti") return 'Graphiti memory is not selected. Set memory.provider to "graphiti".';
+	if (!settings.endpoint) return "Set memory.endpoint to a Neo4j Bolt URI, for example bolt://localhost:7687.";
+	if (!settings.llmModel) return "Set memory.llmModel to the model used for Graphiti entity extraction.";
+	if (settings.captureMode !== "explicit")
+		return 'Only explicit Graphiti capture is supported currently; set memory.captureMode to "explicit".';
+	return undefined;
 }
 
-function readState(ctx: ExtensionContext): { dir: string; state: HarnessState } {
-	const dir = localStateDir(ctx);
-	return { dir, state: loadHarnessState(dir, "local") };
+function pythonPath(): string {
+	return process.env.PRIME_AGENT_KERNEL_PYTHON || join(getKernelVenvDir(), "bin", "python");
 }
 
-function slug(raw: string): string {
-	const value = raw
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "")
-		.slice(0, 80);
-	return value || "memory";
+function runtimeSourcePath(): string {
+	const packageDir = getPackageDir();
+	return join(packageDir, "dist", "prime-agent-runtime", "src");
+}
+
+function runGraphiti(
+	settings: MemorySettingsSnapshot,
+	operation: "doctor" | "search" | "remember" | "forget",
+	payload: Record<string, unknown> = {},
+): Promise<GraphitiResponse> {
+	const error = configError(settings);
+	if (error) return Promise.resolve({ ok: false, error });
+	return new Promise((resolve, reject) => {
+		const child = spawn(pythonPath(), ["-m", "rlm.graphiti_memory"], {
+			env: {
+				...process.env,
+				PYTHONPATH: [runtimeSourcePath(), process.env.PYTHONPATH].filter(Boolean).join(delimiter),
+			},
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		child.once("error", reject);
+		child.once("close", (code) => {
+			const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
+			if (!line) {
+				reject(new Error(stderr.trim() || `Graphiti bridge exited with code ${code ?? "unknown"}.`));
+				return;
+			}
+			try {
+				resolve(JSON.parse(line) as GraphitiResponse);
+			} catch {
+				reject(new Error(`Graphiti bridge returned invalid JSON: ${line.slice(0, 300)}`));
+			}
+		});
+		child.stdin.end(JSON.stringify({ operation, config: settings, ...payload }));
+	});
+}
+
+function itemText(item: GraphitiItem): string {
+	const label = item.name || item.title || item.id;
+	const body = item.fact || item.content || "";
+	return `[graphiti:${item.id}] ${label}: ${body}`;
 }
 
 function titleFor(content: string): string {
@@ -47,209 +109,156 @@ function titleFor(content: string): string {
 	return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine || "memory";
 }
 
-function memoryRecords(ctx: ExtensionContext, state?: HarnessState): MemoryRecord[] {
-	const current = state ?? readState(ctx).state;
-	return Object.entries(current.entries.memory).map(([id, entry]) => ({ id, entry }));
+function searchTerms(query: string): string {
+	return query.trim().slice(0, 2_000);
 }
 
-function bareId(id: string): string {
-	return id.replace(/^local:/, "");
-}
-
-function findMemory(ctx: ExtensionContext, id: string, state?: HarnessState): HarnessEntry | undefined {
-	const normalizedId = bareId(id);
-	return memoryRecords(ctx, state).find(({ id: entryId }) => entryId === normalizedId)?.entry;
-}
-
-function applyMemoryEdit(pi: ExtensionAPI, ctx: ExtensionContext, edit: RefinementEdit): HarnessEntry {
-	const { dir, state } = readState(ctx);
-	const result = applyRefinementProposal(
-		state,
-		{
-			summary: `Explicit memory ${edit.action}`,
-			rationale: "User or agent explicitly requested this memory change.",
-			expectedOutcome: "The requested local memory change is persisted and available on the next turn.",
-			edits: [edit],
-		},
-		{ id: `memory_${randomUUID()}`, scope: "local" },
-	);
-	const applied = result.appliedEdits[0];
-	if (!applied?.applied) {
-		throw new Error(applied?.error ?? `Unable to ${edit.action} memory.`);
+function notifyResponse(ctx: ExtensionContext, response: GraphitiResponse, emptyMessage: string): void {
+	if (!response.ok) {
+		ctx.ui.notify(response.error || "Graphiti memory operation failed.", "error");
+		return;
 	}
-	result.harnessStatePath = getHarnessStatePath(dir);
-	saveHarnessState(dir, state);
-	pi.appendEntry(REFINEMENT_CUSTOM_TYPE, result);
-	return applied.after ?? applied.before!;
+	const items = response.items ?? [];
+	ctx.ui.notify(items.length ? items.map(itemText).join("\n") : emptyMessage, "info");
 }
 
-function searchMemories(ctx: ExtensionContext, query: string): HarnessEntry[] {
-	const stopWords = new Set(["a", "an", "and", "does", "for", "how", "in", "is", "of", "the", "this", "use", "which"]);
-	const terms = query
-		.trim()
-		.toLowerCase()
-		.split(/\s+/)
-		.filter((term) => term.length > 2 && !stopWords.has(term));
-	return memoryRecords(ctx)
-		.map(({ entry }) => entry)
-		.filter(({ title, content, path }) => {
-			const haystack = `${title} ${content} ${path}`.toLowerCase();
-			return terms.length === 0 || terms.some((term) => haystack.includes(term));
-		})
-		.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-}
-
-function formatMemory(entry: HarnessEntry): string {
-	return `[local:${entry.id}] ${entry.title}: ${entry.content.trim().replace(/\s+/g, " ")}`;
-}
-
-function parseTripleParts(raw: string, expected: number): string[] | undefined {
-	const parts = raw.split(" :: ").map((part) => part.trim());
-	return parts.length === expected && parts.every(Boolean) ? parts : undefined;
-}
-
-function usage(): string {
-	return "Usage: /memory status | list [query] | remember <text> | show <id> | update <id> :: <title> :: <content> | forget <id>";
-}
-
-function status(ctx: ExtensionContext): string {
-	try {
-		const { dir, state } = readState(ctx);
-		return `Local harness memory: ${Object.keys(state.entries.memory).length} entries\nStore: ${getHarnessStatePath(dir)}\nCapture: explicit only`;
-	} catch (error) {
-		return `Local harness memory: unavailable\n${error instanceof Error ? error.message : String(error)}`;
-	}
-}
-
-export default function memoryExtension(pi: ExtensionAPI): void {
-	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx) => {
-		let matches: HarnessEntry[];
-		try {
-			matches = searchMemories(ctx, event.prompt).slice(0, MAX_RECALL_ENTRIES);
-		} catch {
-			return;
-		}
-		const lines: string[] = [];
-		let used = 0;
-		for (const entry of matches) {
-			const line = formatMemory(entry);
-			if (used + line.length > MAX_RECALL_CHARS) break;
-			lines.push(line);
-			used += line.length;
-		}
-		if (lines.length === 0) return;
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n<recalled_local_memory>\n${lines.join("\n")}\n</recalled_local_memory>`,
-		};
-	});
-
-	pi.registerTool({
-		name: "memory_remember",
-		label: "Remember",
-		description:
-			"Save a durable local memory. Use only for stable facts, preferences, decisions, or outcomes the user would want recalled later.",
-		promptSnippet:
-			"Use memory_remember only for durable, user-approved facts; memory is stored in the current session's local harness file.",
-		parameters: Type.Object({
-			title: Type.String({ description: "Short stable title used as the memory id" }),
-			content: Type.String({ description: "The durable fact, preference, decision, or outcome to remember" }),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const entry = applyMemoryEdit(pi, ctx, {
-				action: "create",
-				kind: "memory",
-				id: slug(params.title),
-				title: params.title,
-				content: params.content,
-				path: "general",
-				metadata: { managedBy: "memory-extension" },
-			});
-			return { content: [{ type: "text", text: `Saved local memory ${entry.id}: ${entry.title}` }], details: entry };
-		},
-	});
-
-	pi.registerCommand("memory", {
-		description: "View and manage local harness memory",
-		getArgumentCompletions: () => [
-			{ value: "status", label: "status", description: "Show memory storage and capture policy" },
-			{ value: "list", label: "list", description: "List or search memories" },
-			{ value: "remember", label: "remember", description: "Save a durable memory" },
-			{ value: "show", label: "show", description: "Show one memory" },
-			{ value: "update", label: "update", description: "Update one memory" },
-			{ value: "forget", label: "forget", description: "Delete one memory" },
-		],
-		handler: async (args, ctx) => {
-			const trimmed = args.trim();
-			const separator = trimmed.search(/\s/);
-			const command = separator < 0 ? trimmed : trimmed.slice(0, separator);
-			const rest = separator < 0 ? "" : trimmed.slice(separator).trim();
-			if (!command || command === "status") {
-				ctx.ui.notify(status(ctx), "info");
-				return;
-			}
+export function createMemoryExtension(getSettings: () => MemorySettingsSnapshot) {
+	return function graphitiMemoryExtension(pi: ExtensionAPI): void {
+		pi.on("before_agent_start", async (event: BeforeAgentStartEvent) => {
+			const settings = getSettings();
+			if (configError(settings)) return;
 			try {
-				if (command === "list") {
-					const entries = searchMemories(ctx, rest);
-					ctx.ui.notify(entries.length ? entries.map(formatMemory).join("\n") : "No matching memories.", "info");
-					return;
+				const response = await runGraphiti(settings, "search", { query: event.prompt });
+				if (!response.ok) return;
+				const items = (response.items ?? []).slice(0, MAX_RECALL_ENTRIES);
+				const maxChars = Math.max(1_000, settings.maxRecallTokens * 4);
+				let used = 0;
+				const lines: string[] = [];
+				for (const item of items) {
+					const line = itemText(item);
+					if (used + line.length > maxChars) break;
+					lines.push(line);
+					used += line.length;
 				}
-				if (command === "remember" || command === "add") {
-					if (!rest) {
-						ctx.ui.notify("Usage: /memory remember <text>", "warning");
-						return;
-					}
-					const entry = applyMemoryEdit(pi, ctx, {
-						action: "create",
-						kind: "memory",
-						id: slug(titleFor(rest)),
-						title: titleFor(rest),
-						content: rest,
-						path: "general",
-						metadata: { managedBy: "memory-extension" },
-					});
-					ctx.ui.notify(`Saved local memory ${entry.id}: ${entry.title}`, "info");
-					return;
-				}
-				if (command === "show") {
-					const entry = findMemory(ctx, rest);
-					ctx.ui.notify(entry ? formatMemory(entry) : `Memory ${rest} was not found.`, entry ? "info" : "warning");
-					return;
-				}
-				if (command === "update") {
-					const parts = parseTripleParts(rest, 3);
-					if (!parts) {
-						ctx.ui.notify("Usage: /memory update <id> :: <title> :: <content>", "warning");
-						return;
-					}
-					const [id, title, content] = parts;
-					const entry = applyMemoryEdit(pi, ctx, {
-						action: "update",
-						kind: "memory",
-						id: bareId(id),
-						title,
-						content,
-					});
-					ctx.ui.notify(`Updated local memory ${entry.id}.`, "info");
-					return;
-				}
-				if (command === "forget" || command === "delete") {
-					if (!rest) {
-						ctx.ui.notify("Usage: /memory forget <id>", "warning");
-						return;
-					}
-					if (!findMemory(ctx, rest)) {
-						ctx.ui.notify(`Memory ${rest} was not found.`, "warning");
-						return;
-					}
-					if (!(await ctx.ui.confirm("Forget memory", `Delete local memory ${rest}?`))) return;
-					applyMemoryEdit(pi, ctx, { action: "delete", kind: "memory", id: bareId(rest) });
-					ctx.ui.notify(`Deleted local memory ${rest}.`, "info");
-					return;
-				}
-				ctx.ui.notify(usage(), "warning");
-			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				if (lines.length === 0) return;
+				return {
+					systemPrompt: `${event.systemPrompt}\n\n<recalled_graphiti_memory>\n${lines.join("\n")}\n</recalled_graphiti_memory>`,
+				};
+			} catch {
+				// Memory availability must never prevent a normal agent turn.
 			}
-		},
-	});
+		});
+
+		pi.registerTool({
+			name: "memory_remember",
+			label: "Remember in Graphiti",
+			description:
+				"Save a durable fact, preference, decision, or outcome in the configured embedded Graphiti workspace.",
+			parameters: Type.Object({
+				title: Type.String({ description: "Short title for this memory" }),
+				content: Type.String({ description: "Durable information to store" }),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+				const response = await runGraphiti(getSettings(), "remember", {
+					title: params.title,
+					content: params.content,
+				});
+				if (!response.ok) throw new Error(response.error || "Graphiti memory capture failed.");
+				return {
+					content: [{ type: "text", text: `Saved Graphiti memory ${response.item?.id ?? "(unknown id)"}.` }],
+					details: response.item ?? {},
+				};
+			},
+		});
+
+		pi.registerCommand("memory", {
+			description: "Search and manage embedded Graphiti memory",
+			getArgumentCompletions: () => [
+				{ value: "status", label: "status", description: "Show Graphiti configuration" },
+				{ value: "doctor", label: "doctor", description: "Test Neo4j and Graphiti connectivity" },
+				{ value: "list", label: "list", description: "List recent Graphiti episodes" },
+				{ value: "search", label: "search", description: "Search Graphiti memory" },
+				{ value: "remember", label: "remember", description: "Save an explicit Graphiti memory" },
+				{ value: "forget", label: "forget", description: "Delete a Graphiti episode" },
+			],
+			handler: async (args, ctx) => {
+				const trimmed = args.trim();
+				const separator = trimmed.search(/\s/);
+				const command = separator < 0 ? trimmed || "status" : trimmed.slice(0, separator);
+				const rest = separator < 0 ? "" : trimmed.slice(separator).trim();
+				const settings = getSettings();
+				if (command === "status") {
+					const error = configError(settings);
+					ctx.ui.notify(
+						error
+							? `Graphiti memory: not ready\n${error}`
+							: `Graphiti memory: configured\nNeo4j: ${settings.endpoint}\nWorkspace: ${settings.workspace || "prime-agent"}\nCapture: explicit`,
+						"info",
+					);
+					return;
+				}
+				try {
+					if (command === "doctor") {
+						const response = await runGraphiti(settings, "doctor");
+						ctx.ui.notify(
+							response.ok
+								? `Graphiti is healthy. Workspace: ${response.workspace}`
+								: response.error || "Graphiti health check failed.",
+							response.ok ? "info" : "error",
+						);
+						return;
+					}
+					if (command === "list") {
+						notifyResponse(ctx, await runGraphiti(settings, "search"), "No Graphiti memories found.");
+						return;
+					}
+					if (command === "search") {
+						if (!rest) {
+							ctx.ui.notify("Usage: /memory search <query>", "warning");
+							return;
+						}
+						notifyResponse(
+							ctx,
+							await runGraphiti(settings, "search", { query: searchTerms(rest) }),
+							"No matching Graphiti memories found.",
+						);
+						return;
+					}
+					if (command === "remember" || command === "add") {
+						if (!rest) {
+							ctx.ui.notify("Usage: /memory remember <text>", "warning");
+							return;
+						}
+						const response = await runGraphiti(settings, "remember", { title: titleFor(rest), content: rest });
+						ctx.ui.notify(
+							response.ok
+								? `Saved Graphiti memory ${response.item?.id ?? "(unknown id)"}.`
+								: response.error || "Graphiti memory capture failed.",
+							response.ok ? "info" : "error",
+						);
+						return;
+					}
+					if (command === "forget" || command === "delete") {
+						if (!rest) {
+							ctx.ui.notify("Usage: /memory forget <episode-id>", "warning");
+							return;
+						}
+						if (!(await ctx.ui.confirm("Forget Graphiti memory", `Delete episode ${rest}?`))) return;
+						const response = await runGraphiti(settings, "forget", { id: rest });
+						ctx.ui.notify(
+							response.ok ? `Deleted Graphiti episode ${rest}.` : response.error || "Graphiti delete failed.",
+							response.ok ? "info" : "error",
+						);
+						return;
+					}
+					ctx.ui.notify(
+						"Usage: /memory status | doctor | list | search <query> | remember <text> | forget <episode-id>",
+						"warning",
+					);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+			},
+		});
+	};
 }

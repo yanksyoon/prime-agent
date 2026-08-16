@@ -34,10 +34,20 @@ export interface MemorySettings {
 	enabled?: boolean; // default: false
 	provider?: "graphiti";
 	captureMode?: MemoryCaptureMode; // default: "explicit"
-	endpoint?: string; // Graphiti service endpoint
-	workspace?: string; // provider namespace
+	/** Neo4j Bolt URI used by embedded graphiti-core. */
+	endpoint?: string;
+	/** Graphiti group_id used to isolate this workspace. */
+	workspace?: string;
 	maxRecallTokens?: number; // default: 1200
 	includeToolOutput?: boolean; // default: false
+	neo4jUser?: string; // default: "neo4j"
+	neo4jPasswordEnv?: string; // default: "GRAPHITI_NEO4J_PASSWORD"
+	llmModel?: string;
+	llmBaseUrl?: string;
+	llmApiKeyEnv?: string; // default: "GRAPHITI_LLM_API_KEY"
+	embeddingModel?: string; // default: "text-embedding-3-small"
+	embeddingBaseUrl?: string;
+	embeddingApiKeyEnv?: string; // defaults to llmApiKeyEnv
 }
 
 export const DEFAULT_MEMORY_CAPTURE_MODE: MemoryCaptureMode = "explicit";
@@ -900,11 +910,37 @@ export class SettingsManager {
 		enabled: boolean;
 		provider?: "graphiti";
 		captureMode: MemoryCaptureMode;
+		endpoint?: string;
+		workspace?: string;
+		maxRecallTokens: number;
+		includeToolOutput: boolean;
+		neo4jUser: string;
+		neo4jPasswordEnv: string;
+		llmModel?: string;
+		llmBaseUrl?: string;
+		llmApiKeyEnv: string;
+		embeddingModel: string;
+		embeddingBaseUrl?: string;
+		embeddingApiKeyEnv: string;
 	} {
+		const memory = this.settings.memory;
+		const llmApiKeyEnv = memory?.llmApiKeyEnv ?? "GRAPHITI_LLM_API_KEY";
 		return {
-			enabled: this.settings.memory?.enabled ?? false,
-			provider: this.settings.memory?.provider,
-			captureMode: this.settings.memory?.captureMode ?? DEFAULT_MEMORY_CAPTURE_MODE,
+			enabled: memory?.enabled ?? false,
+			provider: memory?.provider,
+			captureMode: memory?.captureMode ?? DEFAULT_MEMORY_CAPTURE_MODE,
+			endpoint: memory?.endpoint,
+			workspace: memory?.workspace,
+			maxRecallTokens: memory?.maxRecallTokens ?? 1200,
+			includeToolOutput: memory?.includeToolOutput ?? false,
+			neo4jUser: memory?.neo4jUser ?? "neo4j",
+			neo4jPasswordEnv: memory?.neo4jPasswordEnv ?? "GRAPHITI_NEO4J_PASSWORD",
+			llmModel: memory?.llmModel,
+			llmBaseUrl: memory?.llmBaseUrl,
+			llmApiKeyEnv,
+			embeddingModel: memory?.embeddingModel ?? "text-embedding-3-small",
+			embeddingBaseUrl: memory?.embeddingBaseUrl,
+			embeddingApiKeyEnv: memory?.embeddingApiKeyEnv ?? llmApiKeyEnv,
 		};
 	}
 

@@ -1,92 +1,96 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import memoryExtension from "../src/core/extensions/builtin/memory.js";
+import { describe, expect, it } from "vitest";
+import { createMemoryExtension } from "../src/core/extensions/builtin/memory.js";
 import type { ExtensionAPI } from "../src/core/extensions/types.js";
-import { loadHarnessState } from "../src/core/refinement/refinement.js";
+import type { MemorySettings } from "../src/core/settings-manager.js";
+
+type SettingsSnapshot = MemorySettings & {
+	enabled: boolean;
+	captureMode: "explicit" | "session-end" | "turn";
+	maxRecallTokens: number;
+	includeToolOutput: boolean;
+	neo4jUser: string;
+	neo4jPasswordEnv: string;
+	llmApiKeyEnv: string;
+	embeddingModel: string;
+	embeddingApiKeyEnv: string;
+};
 
 function createMockPi() {
-	const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
-	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+	const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const tools = new Map<string, unknown>();
-	const entries: Array<{ type: string; data: unknown }> = [];
 	const pi = {
-		on(event: string, handler: (...args: any[]) => unknown) {
+		on(event: string, handler: (...args: unknown[]) => unknown) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
-		registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+		registerCommand(name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) {
 			commands.set(name, command);
 		},
 		registerTool(tool: { name: string }) {
 			tools.set(tool.name, tool);
 		},
-		appendEntry(type: string, data: unknown) {
-			entries.push({ type, data });
-		},
 	} as unknown as ExtensionAPI;
-	return { pi, handlers, commands, tools, entries };
+	return { pi, handlers, commands, tools };
 }
 
-function createContext(artifactDir: string) {
+function settings(overrides: Partial<SettingsSnapshot> = {}): SettingsSnapshot {
+	return {
+		enabled: false,
+		provider: "graphiti",
+		captureMode: "explicit",
+		endpoint: "bolt://localhost:7687",
+		workspace: "prime-agent",
+		maxRecallTokens: 1200,
+		includeToolOutput: false,
+		neo4jUser: "neo4j",
+		neo4jPasswordEnv: "GRAPHITI_NEO4J_PASSWORD",
+		llmModel: "gpt-4o-mini",
+		llmApiKeyEnv: "GRAPHITI_LLM_API_KEY",
+		embeddingModel: "text-embedding-3-small",
+		embeddingApiKeyEnv: "GRAPHITI_LLM_API_KEY",
+		...overrides,
+	};
+}
+
+function createContext() {
 	const notifications: string[] = [];
 	return {
-		ctx: {
-			cwd: "/tmp/project",
-			sessionManager: {
-				getSessionArtifactDir: () => artifactDir,
-			},
-			ui: {
-				notify: (message: string) => notifications.push(message),
-				confirm: async () => true,
-			},
-		},
+		ctx: { ui: { notify: (message: string) => notifications.push(message) } },
 		notifications,
 	};
 }
 
-describe("memory extension", () => {
-	const cleanup: string[] = [];
-	afterEach(() => {
-		while (cleanup.length > 0) rmSync(cleanup.pop()!, { recursive: true, force: true });
-	});
-
-	it("registers commands and explicit memory capture", async () => {
-		const artifactDir = mkdtempSync(join(tmpdir(), "prime-memory-"));
-		cleanup.push(artifactDir);
-		const { pi, handlers, commands, tools, entries } = createMockPi();
-		const { ctx, notifications } = createContext(artifactDir);
-		memoryExtension(pi);
+describe("Graphiti memory extension", () => {
+	it("registers the command and explicit capture tool", async () => {
+		const state = settings();
+		const { pi, commands, tools } = createMockPi();
+		const { ctx, notifications } = createContext();
+		createMemoryExtension(() => state)(pi);
 
 		expect(commands.has("memory")).toBe(true);
 		expect(tools.has("memory_remember")).toBe(true);
-		await commands.get("memory")!.handler("remember Project uses pnpm", ctx);
-		expect(notifications[0]).toContain("Saved local memory project_uses_pnpm");
-		expect(entries).toHaveLength(1);
-
-		const state = loadHarnessState(join(artifactDir, "harness"), "local");
-		expect(state.entries.memory.project_uses_pnpm?.content).toBe("Project uses pnpm");
-		expect(JSON.parse(readFileSync(join(artifactDir, "harness", "harness_state.json"), "utf8")).schema).toBe(1);
-
-		const result = (await handlers.get("before_agent_start")![0](
-			{
-				type: "before_agent_start",
-				prompt: "Which package manager does this project use?",
-				systemPrompt: "base",
-			},
-			ctx,
-		)) as { systemPrompt?: string } | undefined;
-		expect(result?.systemPrompt).toContain("<recalled_local_memory>");
-		expect(result?.systemPrompt).toContain("Project uses pnpm");
+		await commands.get("memory")!.handler("status", ctx);
+		expect(notifications[0]).toContain("Graphiti memory is disabled");
 	});
 
-	it("refuses writes for in-memory sessions", async () => {
+	it("shows configured Graphiti status without contacting the database", async () => {
+		const state = settings({ enabled: true });
 		const { pi, commands } = createMockPi();
-		const { ctx, notifications } = createContext("");
-		(ctx.sessionManager as { getSessionArtifactDir: () => string | undefined }).getSessionArtifactDir = () =>
-			undefined;
-		memoryExtension(pi);
-		await commands.get("memory")!.handler("remember Do not persist", ctx);
-		expect(notifications[0]).toContain("requires a persisted session");
+		const { ctx, notifications } = createContext();
+		createMemoryExtension(() => state)(pi);
+
+		await commands.get("memory")!.handler("status", ctx);
+		expect(notifications[0]).toContain("Graphiti memory: configured");
+		expect(notifications[0]).toContain("bolt://localhost:7687");
+	});
+
+	it("does not recall when Graphiti is disabled", async () => {
+		const { pi, handlers } = createMockPi();
+		createMemoryExtension(() => settings())(pi);
+		const result = await handlers.get("before_agent_start")![0](
+			{ prompt: "remembered fact", systemPrompt: "base" },
+			{},
+		);
+		expect(result).toBeUndefined();
 	});
 });
