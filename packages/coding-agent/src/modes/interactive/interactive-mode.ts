@@ -7526,6 +7526,8 @@ export class InteractiveMode {
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 					fullscreen: this.fullscreenEnabled,
 					warnings: this.settingsManager.getWarnings(),
+					memoryEnabled: this.settingsManager.getMemorySettings().enabled,
+					memoryCaptureMode: this.settingsManager.getMemorySettings().captureMode,
 				},
 				{
 					onAutoCompactChange: (enabled) => {
@@ -7652,6 +7654,12 @@ export class InteractiveMode {
 					},
 					onWarningsChange: (warnings) => {
 						this.settingsManager.setWarnings(warnings);
+					},
+					onMemoryEnabledChange: (enabled) => {
+						this.settingsManager.setMemoryEnabled(enabled);
+					},
+					onMemoryCaptureModeChange: (mode) => {
+						this.settingsManager.setMemoryCaptureMode(mode);
 					},
 					onCancel: () => {
 						done();

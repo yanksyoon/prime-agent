@@ -896,6 +896,30 @@ export class SettingsManager {
 		};
 	}
 
+	getMemorySettings(): {
+		enabled: boolean;
+		provider?: "graphiti";
+		captureMode: MemoryCaptureMode;
+	} {
+		return {
+			enabled: this.settings.memory?.enabled ?? false,
+			provider: this.settings.memory?.provider,
+			captureMode: this.settings.memory?.captureMode ?? DEFAULT_MEMORY_CAPTURE_MODE,
+		};
+	}
+
+	setMemoryEnabled(enabled: boolean): void {
+		this.globalSettings.memory = { ...(this.globalSettings.memory ?? {}), enabled };
+		this.markModified("memory", "enabled");
+		this.save();
+	}
+
+	setMemoryCaptureMode(captureMode: MemoryCaptureMode): void {
+		this.globalSettings.memory = { ...(this.globalSettings.memory ?? {}), captureMode };
+		this.markModified("memory", "captureMode");
+		this.save();
+	}
+
 	getAutoRefineSettings(): { enabled: boolean; turnInterval: number; compact: boolean; cooldownMs: number } {
 		const turnInterval = this.settings.autoRefine?.turnInterval;
 		const cooldownMs = this.settings.autoRefine?.cooldownMs;

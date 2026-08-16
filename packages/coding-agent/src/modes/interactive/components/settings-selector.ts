@@ -11,7 +11,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import type { IdleEvictionMinutes } from "../../../core/session-action-store.js";
-import type { WarningSettings } from "../../../core/settings-manager.js";
+import type { MemoryCaptureMode, WarningSettings } from "../../../core/settings-manager.js";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 
@@ -55,6 +55,8 @@ export interface SettingsConfig {
 	showTerminalProgress: boolean;
 	fullscreen: boolean;
 	warnings: WarningSettings;
+	memoryEnabled: boolean;
+	memoryCaptureMode: MemoryCaptureMode;
 }
 
 export interface SettingsCallbacks {
@@ -81,6 +83,8 @@ export interface SettingsCallbacks {
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onFullscreenChange: (enabled: boolean) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
+	onMemoryEnabledChange: (enabled: boolean) => void;
+	onMemoryCaptureModeChange: (mode: MemoryCaptureMode) => void;
 	onCancel: () => void;
 }
 
@@ -216,6 +220,20 @@ export class SettingsSelectorComponent extends Container {
 				description: "Automatically compact context when it gets too large",
 				currentValue: config.autoCompact ? "true" : "false",
 				values: ["true", "false"],
+			},
+			{
+				id: "external-memory",
+				label: "External memory",
+				description: "Enable Graphiti memory; explicit tool calls are the default capture mode",
+				currentValue: config.memoryEnabled ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "memory-capture-mode",
+				label: "Memory capture mode",
+				description: "Choose when external memory is captured",
+				currentValue: config.memoryCaptureMode,
+				values: ["explicit", "session-end", "turn"],
 			},
 			{
 				id: "idle-eviction-minutes",
@@ -454,6 +472,12 @@ export class SettingsSelectorComponent extends Container {
 				switch (id) {
 					case "autocompact":
 						callbacks.onAutoCompactChange(newValue === "true");
+						break;
+					case "external-memory":
+						callbacks.onMemoryEnabledChange(newValue === "true");
+						break;
+					case "memory-capture-mode":
+						callbacks.onMemoryCaptureModeChange(newValue as MemoryCaptureMode);
 						break;
 					case "idle-eviction-minutes":
 						callbacks.onIdleEvictionMinutesChange(newValue === "off" ? "off" : Number(newValue));
