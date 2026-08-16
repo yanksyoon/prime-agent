@@ -33,7 +33,13 @@ export default function jiraTime(pi: ExtensionAPI) {
     if (cmd === "find") { ctx.ui.notify("Ask the agent to search Jira using Atlassian MCP. If you reject the suggestions, choose Create new issue.", "info"); return; }
     if (cmd === "create") { ctx.ui.notify("Ask the agent to create a Jira Story through Atlassian MCP. Creation requires confirmation.", "info"); return; }
     if (cmd === "stop") { if (!row) { ctx.ui.notify("No tracked session.", "warning"); return; } await persist(); row.status="pending_confirmation"; const minutes=Math.round(round(row.activeMs)/60000); const ok=await ctx.ui.confirm("Jira worklog", `Submit ${minutes} minutes for ${row.issue ?? "an unassigned session"}?`); if(ok) { ctx.ui.notify("Confirmed. The agent will submit this through the existing Atlassian MCP addWorklogToJiraIssue tool.", "info"); pi.sendMessage({customType:"jira-time", content:`Submit the confirmed Jira time entry via existing Atlassian MCP. Session ${row.id}; issue ${row.issue ?? "missing"}; duration ${minutes} minutes. Do not create or log anything else.`, display:true}, {triggerTurn:true, deliverAs:"followUp"}); } else { row.status="local_pending"; await persist(); ctx.ui.notify("Kept locally; nothing was submitted to Jira.", "info"); } return; }
-    if (cmd === "doctor") { ctx.ui.notify("Atlassian MCP is required. Verify the server and required Jira tools with the agent; run /mcp login atlassian if authentication is missing.", "info"); return; }
+    if (cmd === "doctor") {
+      let configured = false;
+      try { const settings = JSON.parse(await readFile(join(homedir(), ".prime", "agent", "settings.json"), "utf8")) as { mcpServers?: Record<string, { enabled?: boolean; url?: string }> }; const a = settings.mcpServers?.atlassian; configured = Boolean(a?.enabled && a.url); } catch { /* settings may not exist yet */ }
+      if (!configured) { ctx.ui.notify("Atlassian MCP preflight failed: configure mcpServers.atlassian in Prime Agent settings, then run /mcp login atlassian.", "warning"); return; }
+      ctx.ui.notify("Atlassian MCP is configured. Ask the agent to verify Jira search, create-issue, and add-worklog tools; authentication can be repaired with /mcp login atlassian.", "info");
+      return;
+    }
     ctx.ui.notify("Usage: /jira-time start ISSUE | status | associate ISSUE | find | create | stop | doctor", "info");
   }});
 }
