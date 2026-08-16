@@ -365,7 +365,7 @@ describe("ExtensionRunner", () => {
 
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-			const commands = runner.getRegisteredCommands();
+			const commands = runner.getRegisteredCommands().filter((command) => command.name !== "timing");
 
 			expect(commands.length).toBe(2);
 			expect(commands.map((c) => c.name).sort()).toEqual(["cmd-a", "cmd-b"]);
@@ -410,7 +410,7 @@ describe("ExtensionRunner", () => {
 
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-			const commands = runner.getRegisteredCommands();
+			const commands = runner.getRegisteredCommands().filter((command) => command.name !== "timing");
 			const diagnostics = runner.getCommandDiagnostics();
 
 			expect(commands).toHaveLength(2);
@@ -587,7 +587,10 @@ describe("ExtensionRunner", () => {
 
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			expect(result.errors).toEqual([]);
-			expect(result.extensions).toHaveLength(2);
+			const userExtensions = result.extensions.filter(
+				(extension) => !extension.sourceInfo.path.endsWith("timing-extension.ts"),
+			);
+			expect(userExtensions).toHaveLength(2);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 			const errors: string[] = [];
 			runner.onError((error) => errors.push(error.error));
