@@ -38,6 +38,7 @@ type GraphitiResponse = {
 };
 
 const MAX_RECALL_ENTRIES = 5;
+type ConfigureMemory = (settings: Partial<MemorySettings>) => void;
 
 function configError(settings: MemorySettingsSnapshot): string | undefined {
 	if (!settings.enabled) return "Graphiti memory is disabled. Set memory.enabled to true.";
@@ -99,9 +100,75 @@ function runGraphiti(
 }
 
 function itemText(item: GraphitiItem): string {
-	const label = item.name || item.title || item.id;
+	const label = item.name || item.title || "Memory";
 	const body = item.fact || item.content || "";
-	return `[graphiti:${item.id}] ${label}: ${body}`;
+	return `Memory ID: ${item.id}\n  ${label}: ${body}`;
+}
+
+function formatGraphitiError(error: string): string {
+	if (error.includes("environment variable")) {
+		return `Graphiti is not ready: ${error}\nSet the variable, then run /memory doctor.`;
+	}
+	if (/(connect|connection|neo4j|bolt)/i.test(error)) {
+		return `Graphiti could not connect to Neo4j: ${error}\nCheck that Neo4j is running at the configured Bolt URI, then run /memory doctor.`;
+	}
+	if (error.includes("No module named")) {
+		return `${error}\nRestart Prime Agent so the Graphiti runtime dependency can be provisioned, then run /memory doctor.`;
+	}
+	return error;
+}
+
+function helpText(): string {
+	return [
+		"Graphiti memory",
+		"",
+		"Embedded graphiti-core stores memories in Neo4j. Capture is explicit only.",
+		"",
+		"Commands:",
+		"  /memory status              Show configuration and readiness",
+		"  /memory setup               Configure Neo4j and Graphiti interactively",
+		"  /memory doctor              Test Neo4j, credentials, and Graphiti indexes",
+		"  /memory list                List recent memories in the workspace",
+		"  /memory search <query>      Search Graphiti facts",
+		"  /memory remember <text>     Save an explicit memory",
+		"  /memory forget <memory-id>  Delete a memory after confirmation",
+		"",
+		"Examples:",
+		"  /memory remember This project uses pnpm",
+		"  /memory search package manager",
+		"  /memory forget 4f8c...",
+		"",
+		"Required configuration:",
+		"  Neo4j Bolt URI and password",
+		"  OpenAI-compatible Graphiti LLM and embedding credentials",
+		"",
+		"Set memory.captureMode to explicit. Automatic turn and session-end capture are not enabled.",
+	].join("\n");
+}
+
+function statusText(settings: MemorySettingsSnapshot): string {
+	const configuration = configError(settings);
+	const neo4jPassword = process.env[settings.neo4jPasswordEnv] ? "set" : "missing";
+	const llmKey = process.env[settings.llmApiKeyEnv] ? "set" : "missing";
+	const missingSecrets = [
+		neo4jPassword === "missing" ? settings.neo4jPasswordEnv : undefined,
+		llmKey === "missing" ? settings.llmApiKeyEnv : undefined,
+	].filter(Boolean);
+	const problem =
+		configuration ||
+		(missingSecrets.length ? `Set environment variable(s): ${missingSecrets.join(", ")}.` : undefined);
+	return [
+		"Graphiti memory",
+		`  Status: ${problem ? "Not ready" : "Configured (run /memory doctor)"}`,
+		`  Provider: ${settings.provider || "not selected"}`,
+		`  Neo4j: ${settings.endpoint || "not configured"}`,
+		`  Workspace: ${settings.workspace || "prime-agent"}`,
+		`  Capture: ${settings.captureMode}`,
+		`  Recall budget: ${settings.maxRecallTokens} tokens`,
+		`  Neo4j password (${settings.neo4jPasswordEnv}): ${neo4jPassword}`,
+		`  Graphiti API key (${settings.llmApiKeyEnv}): ${llmKey}`,
+		...(problem ? ["", `Next step: ${problem}`, "Run /memory setup for guided configuration."] : []),
+	].join("\n");
 }
 
 function titleFor(content: string): string {
@@ -115,15 +182,64 @@ function searchTerms(query: string): string {
 
 function notifyResponse(ctx: ExtensionContext, response: GraphitiResponse, emptyMessage: string): void {
 	if (!response.ok) {
-		ctx.ui.notify(response.error || "Graphiti memory operation failed.", "error");
+		ctx.ui.notify(formatGraphitiError(response.error || "Graphiti memory operation failed."), "error");
 		return;
 	}
 	const items = response.items ?? [];
-	ctx.ui.notify(items.length ? items.map(itemText).join("\n") : emptyMessage, "info");
+	ctx.ui.notify(items.length ? items.map(itemText).join("\n\n") : emptyMessage, "info");
 }
 
-export function createMemoryExtension(getSettings: () => MemorySettingsSnapshot) {
+export function createMemoryExtension(
+	getSettings: () => MemorySettingsSnapshot,
+	configureMemory: ConfigureMemory = () => {},
+) {
 	return function graphitiMemoryExtension(pi: ExtensionAPI): void {
+		const setupMemory = async (ctx: ExtensionContext): Promise<void> => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Run /memory setup in interactive mode, or configure memory in settings.json.", "warning");
+				return;
+			}
+			const current = getSettings();
+			const ask = async (label: string, fallback: string): Promise<string | undefined> => {
+				const value = await ctx.ui.input(label, fallback);
+				if (value === undefined) return undefined;
+				return value.trim() || fallback;
+			};
+			const endpoint = await ask("Neo4j Bolt URI", current.endpoint || "bolt://localhost:7687");
+			if (endpoint === undefined) return;
+			const workspace = await ask("Graphiti workspace", current.workspace || "prime-agent");
+			if (workspace === undefined) return;
+			const neo4jUser = await ask("Neo4j username", current.neo4jUser || "neo4j");
+			if (neo4jUser === undefined) return;
+			const neo4jPasswordEnv = await ask("Neo4j password environment variable", current.neo4jPasswordEnv);
+			if (neo4jPasswordEnv === undefined) return;
+			const llmModel = await ask("Graphiti extraction model", current.llmModel || "gpt-4o-mini");
+			if (llmModel === undefined) return;
+			const llmBaseUrl = await ask(
+				"Graphiti OpenAI-compatible base URL (use default for OpenAI)",
+				current.llmBaseUrl || "",
+			);
+			if (llmBaseUrl === undefined) return;
+			const llmApiKeyEnv = await ask("Graphiti API key environment variable", current.llmApiKeyEnv);
+			if (llmApiKeyEnv === undefined) return;
+			const embeddingModel = await ask("Embedding model", current.embeddingModel || "text-embedding-3-small");
+			if (embeddingModel === undefined) return;
+			configureMemory({
+				enabled: true,
+				provider: "graphiti",
+				captureMode: "explicit",
+				endpoint,
+				workspace,
+				neo4jUser,
+				neo4jPasswordEnv,
+				llmModel,
+				llmBaseUrl: llmBaseUrl || undefined,
+				llmApiKeyEnv,
+				embeddingModel,
+			});
+			ctx.ui.notify("Graphiti settings saved globally. Set the listed secrets, then run /memory doctor.", "info");
+		};
+
 		pi.on("before_agent_start", async (event: BeforeAgentStartEvent) => {
 			const settings = getSettings();
 			if (configError(settings)) return;
@@ -163,7 +279,7 @@ export function createMemoryExtension(getSettings: () => MemorySettingsSnapshot)
 					title: params.title,
 					content: params.content,
 				});
-				if (!response.ok) throw new Error(response.error || "Graphiti memory capture failed.");
+				if (!response.ok) throw new Error(formatGraphitiError(response.error || "Graphiti memory capture failed."));
 				return {
 					content: [{ type: "text", text: `Saved Graphiti memory ${response.item?.id ?? "(unknown id)"}.` }],
 					details: response.item ?? {},
@@ -172,38 +288,44 @@ export function createMemoryExtension(getSettings: () => MemorySettingsSnapshot)
 		});
 
 		pi.registerCommand("memory", {
-			description: "Search and manage embedded Graphiti memory",
+			description: "Configure, search, and save memories in Graphiti; use /memory help for setup and commands",
 			getArgumentCompletions: () => [
-				{ value: "status", label: "status", description: "Show Graphiti configuration" },
-				{ value: "doctor", label: "doctor", description: "Test Neo4j and Graphiti connectivity" },
-				{ value: "list", label: "list", description: "List recent Graphiti episodes" },
-				{ value: "search", label: "search", description: "Search Graphiti memory" },
+				{ value: "help", label: "help", description: "Show setup, commands, examples, and requirements" },
+				{ value: "status", label: "status", description: "Show configuration, credentials, and readiness" },
+				{ value: "setup", label: "setup", description: "Configure Neo4j and Graphiti interactively" },
+				{ value: "doctor", label: "doctor", description: "Test Neo4j, credentials, and Graphiti indexes" },
+				{ value: "list", label: "list", description: "List recent memories in the workspace" },
+				{ value: "search", label: "search", description: "Search relevant Graphiti facts" },
 				{ value: "remember", label: "remember", description: "Save an explicit Graphiti memory" },
-				{ value: "forget", label: "forget", description: "Delete a Graphiti episode" },
+				{ value: "forget", label: "forget", description: "Delete a memory after confirmation" },
 			],
+
 			handler: async (args, ctx) => {
 				const trimmed = args.trim();
 				const separator = trimmed.search(/\s/);
 				const command = separator < 0 ? trimmed || "status" : trimmed.slice(0, separator);
 				const rest = separator < 0 ? "" : trimmed.slice(separator).trim();
 				const settings = getSettings();
-				if (command === "status") {
-					const error = configError(settings);
-					ctx.ui.notify(
-						error
-							? `Graphiti memory: not ready\n${error}`
-							: `Graphiti memory: configured\nNeo4j: ${settings.endpoint}\nWorkspace: ${settings.workspace || "prime-agent"}\nCapture: explicit`,
-						"info",
-					);
+				if (command === "help" || command === "--help" || command === "-h") {
+					ctx.ui.notify(helpText(), "info");
 					return;
 				}
+				if (command === "setup") {
+					await setupMemory(ctx);
+					return;
+				}
+				if (command === "status") {
+					ctx.ui.notify(statusText(settings), "info");
+					return;
+				}
+
 				try {
 					if (command === "doctor") {
 						const response = await runGraphiti(settings, "doctor");
 						ctx.ui.notify(
 							response.ok
 								? `Graphiti is healthy. Workspace: ${response.workspace}`
-								: response.error || "Graphiti health check failed.",
+								: formatGraphitiError(response.error || "Graphiti health check failed."),
 							response.ok ? "info" : "error",
 						);
 						return;
@@ -240,19 +362,19 @@ export function createMemoryExtension(getSettings: () => MemorySettingsSnapshot)
 					}
 					if (command === "forget" || command === "delete") {
 						if (!rest) {
-							ctx.ui.notify("Usage: /memory forget <episode-id>", "warning");
+							ctx.ui.notify("Usage: /memory forget <memory-id>", "warning");
 							return;
 						}
-						if (!(await ctx.ui.confirm("Forget Graphiti memory", `Delete episode ${rest}?`))) return;
+						if (!(await ctx.ui.confirm("Forget Graphiti memory", `Delete memory ${rest}?`))) return;
 						const response = await runGraphiti(settings, "forget", { id: rest });
 						ctx.ui.notify(
-							response.ok ? `Deleted Graphiti episode ${rest}.` : response.error || "Graphiti delete failed.",
+							response.ok ? `Deleted Graphiti memory ${rest}.` : response.error || "Graphiti delete failed.",
 							response.ok ? "info" : "error",
 						);
 						return;
 					}
 					ctx.ui.notify(
-						"Usage: /memory status | doctor | list | search <query> | remember <text> | forget <episode-id>",
+						"Usage: /memory help | status | setup | doctor | list | search <query> | remember <text> | forget <memory-id>",
 						"warning",
 					);
 				} catch (error) {

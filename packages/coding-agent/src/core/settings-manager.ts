@@ -956,6 +956,14 @@ export class SettingsManager {
 		this.save();
 	}
 
+	updateMemorySettings(settings: Partial<MemorySettings>): void {
+		this.globalSettings.memory = { ...(this.globalSettings.memory ?? {}), ...settings };
+		for (const key of Object.keys(settings)) {
+			this.markModified("memory", key);
+		}
+		this.save();
+	}
+
 	getAutoRefineSettings(): { enabled: boolean; turnInterval: number; compact: boolean; cooldownMs: number } {
 		const turnInterval = this.settings.autoRefine?.turnInterval;
 		const cooldownMs = this.settings.autoRefine?.cooldownMs;
