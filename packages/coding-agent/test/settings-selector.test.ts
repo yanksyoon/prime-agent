@@ -33,14 +33,10 @@ const config: SettingsConfig = {
 	showTerminalProgress: false,
 	fullscreen: true,
 	warnings: {},
-	memoryEnabled: false,
-	memoryCaptureMode: "explicit",
 };
 
 const callbacks: SettingsCallbacks = {
 	onAutoCompactChange: () => {},
-	onMemoryEnabledChange: () => {},
-	onMemoryCaptureModeChange: () => {},
 	onIdleEvictionMinutesChange: () => {},
 	onShowImagesChange: () => {},
 	onAutoResizeImagesChange: () => {},
