@@ -31,6 +31,7 @@ const DEFAULT_RLM_EXTRA_PACKAGES = [
 	{ uvArg: "lxml", importName: "lxml", promptLabel: "lxml" },
 	{ uvArg: "pydantic", importName: "pydantic", promptLabel: "pydantic" },
 	{ uvArg: "tyro", importName: "tyro", promptLabel: "tyro" },
+	{ uvArg: "graphiti-core", importName: "graphiti_core", promptLabel: "graphiti-core" },
 ];
 export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.uvArg);
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
