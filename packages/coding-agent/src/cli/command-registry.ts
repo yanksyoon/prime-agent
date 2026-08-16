@@ -150,6 +150,42 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 		usage: "config",
 		summary: "Configure package resources",
 	},
+	{
+		path: ["telegram"],
+		usage: "telegram <setup|status>",
+		summary: "Configure the Telegram integration",
+	},
+	{
+		path: ["telegram", "setup"],
+		usage: "telegram setup",
+		summary: "Configure a Telegram bot and access allowlist",
+	},
+	{
+		path: ["telegram", "status"],
+		usage: "telegram status",
+		summary: "Show Telegram configuration status",
+	},
+	{
+		path: ["gateway"],
+		usage: "gateway [run] [--daemon-socket <path>]",
+		summary: "Run and configure the messaging gateway",
+		description: "Long-polls Telegram and routes each chat to a persistent Prime Agent session.",
+	},
+	{
+		path: ["gateway", "run"],
+		usage: "gateway run [--daemon-socket <path>]",
+		summary: "Run the Telegram gateway in the foreground",
+	},
+	{
+		path: ["gateway", "setup"],
+		usage: "gateway setup",
+		summary: "Configure the Telegram bot and access allowlist",
+	},
+	{
+		path: ["gateway", "status"],
+		usage: "gateway status",
+		summary: "Check Telegram configuration and connectivity",
+	},
 ];
 
 export const PUBLIC_COMMAND_NAMES = new Set(

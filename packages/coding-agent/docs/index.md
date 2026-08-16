@@ -28,6 +28,7 @@ Public releases are currently installed from versioned release artifacts. The in
 - [Architecture overview](architecture.md) - client, daemon, worker, session, kernel, provider, and storage boundaries.
 - [RLM programming model](rlm.md) - programmatic execution, native subagents, Python skills, and durable state.
 - [Long-running and background agents](long-running-agents.md) - daemon workers, messaging, heartbeats, goals, schedules, and autonomous mode.
+- [Telegram integration](telegram.md) - configure a bot and talk to persistent Prime Agent sessions from Telegram.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
 - [Settings](settings.md) - global and project settings.
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.

@@ -40,6 +40,7 @@ Prime Agent combines a persistent Python control environment with durable harnes
 - **The harness can improve:** `/refine` reviews the current trajectory and can apply small, evidence-backed updates to supplemental harness state. It never rewrites the immutable base system prompt, and recorded snapshots support rollback.
 - **Skills are executable:** skills are importable Python packages, and the built-in skill creator can turn recurring workflows into project or personal skills.
 - **Sessions run in the background:** daemon-backed agents keep running when the terminal disconnects and can be reattached later.
+- **Telegram is built in:** run `prime-agent gateway setup` and `prime-agent gateway` to use persistent per-chat sessions from Telegram ([guide](packages/coding-agent/docs/telegram.md)).
 - **Agents communicate directly:** running agents can exchange messages and orchestrate one another without routing everything through the user.
 - **Long tasks keep moving:** automatic compaction, persistent goals, heartbeats, schedules, autonomous mode, and retained subagents preserve progress across turns and terminal sessions.
 
@@ -98,6 +99,7 @@ Prime Agent is built for long-running work, especially for evaluations in resear
 - [Provider setup](packages/coding-agent/docs/providers.md) — subscription and API-key providers
 - [Architecture overview](packages/coding-agent/docs/architecture.md) — daemon, worker, kernel, and persistence boundaries
 - [Development](packages/coding-agent/docs/development.md) — build and run from source
+- [Fork changelog](FORK_CHANGELOG.md) — changes specific to this fork
 
 ## Contributing
 

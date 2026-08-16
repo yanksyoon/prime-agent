@@ -140,6 +140,42 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 		case "config":
 			if (!requireArgumentCount(args.slice(1), 0, "config")) return HANDLED;
 			return continueWith(args);
+		case "telegram": {
+			const action = args[1];
+			if (action === "setup" && args.length === 2) {
+				const { runTelegramSetup } = await import("../telegram/setup.js");
+				await runTelegramSetup();
+				return HANDLED;
+			}
+			if (action === "status" && args.length === 2) {
+				const { printTelegramStatus } = await import("../telegram/gateway.js");
+				await printTelegramStatus();
+				return HANDLED;
+			}
+			return fail(`Usage: ${APP_NAME} telegram <setup|status>`);
+		}
+		case "gateway": {
+			const rest = args.slice(1);
+			if (rest[0] === "setup") {
+				if (rest.length !== 1) return fail(`Usage: ${APP_NAME} gateway setup`);
+				const { runTelegramSetup } = await import("../telegram/setup.js");
+				await runTelegramSetup();
+				return HANDLED;
+			}
+			if (rest[0] === "status") {
+				if (rest.length !== 1) return fail(`Usage: ${APP_NAME} gateway status`);
+				const { printTelegramStatus } = await import("../telegram/gateway.js");
+				await printTelegramStatus();
+				return HANDLED;
+			}
+			const runArgs = rest[0] === "run" ? rest.slice(1) : rest;
+			if (runArgs.length !== 0 && !(runArgs.length === 2 && runArgs[0] === "--daemon-socket")) {
+				return fail(`Usage: ${APP_NAME} gateway [run] [--daemon-socket <path>]`);
+			}
+			const { runTelegramGateway } = await import("../telegram/gateway.js");
+			await runTelegramGateway({ daemonSocket: runArgs[1] });
+			return HANDLED;
+		}
 		default:
 			return continueWith(args);
 	}
