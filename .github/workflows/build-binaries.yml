@@ -151,9 +151,8 @@ jobs:
       - name: Pack production release
         if: env.PUBLISH_PRODUCTION == 'true'
         env:
-          PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+          PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || format('https://github.com/{0}', github.repository) }}
         run: |
-          test -n "$PRIME_AGENT_DOWNLOAD_BASE_URL"
           npm run release:pack -- \
             --channel stable \
             --version "$PRODUCTION_VERSION" \
@@ -163,9 +162,8 @@ jobs:
       - name: Pack beta release
         if: env.PUBLISH_BETA == 'true'
         env:
-          PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+          PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || format('https://github.com/{0}', github.repository) }}
         run: |
-          test -n "$PRIME_AGENT_DOWNLOAD_BASE_URL"
           npm run release:pack -- \
             --channel beta \
             --version "$BETA_VERSION" \
@@ -227,6 +225,7 @@ jobs:
           path: release-artifacts/beta
 
       - name: Prepare installer
+        if: env.R2_BUCKET != '' && env.R2_ENDPOINT_URL != '' && env.R2_PUBLIC_BASE_URL != ''
         run: |
           INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL%/}"
           export INSTALL_BASE_URL
@@ -257,7 +256,7 @@ jobs:
           fi
 
       - name: Publish production channel to R2
-        if: env.PUBLISH_PRODUCTION == 'true'
+        if: env.PUBLISH_PRODUCTION == 'true' && env.R2_BUCKET != '' && env.R2_ENDPOINT_URL != ''
         run: |
           PRODUCTION_DIR=release-artifacts/production
           RELEASE_PREFIX="releases/v${PRODUCTION_VERSION}"
@@ -325,7 +324,7 @@ jobs:
           fi
 
       - name: Publish immutable beta artifacts to R2
-        if: env.PUBLISH_BETA == 'true'
+        if: env.PUBLISH_BETA == 'true' && env.R2_BUCKET != '' && env.R2_ENDPOINT_URL != ''
         run: |
           BETA_DIR=release-artifacts/beta
           RELEASE_PREFIX="releases/v${BETA_VERSION}"
@@ -351,7 +350,7 @@ jobs:
             --cache-control 'public, max-age=31536000, immutable'
 
       - name: Advance beta release
-        if: env.PUBLISH_BETA == 'true'
+        if: env.PUBLISH_BETA == 'true' && env.R2_BUCKET != '' && env.R2_ENDPOINT_URL != '' && env.R2_PUBLIC_BASE_URL != ''
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
