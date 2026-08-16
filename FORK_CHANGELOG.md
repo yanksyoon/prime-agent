@@ -5,4 +5,5 @@ Upstream changes remain documented in `packages/coding-agent/CHANGELOG.md`; do n
 
 ## Unreleased
 
+- Bundled the timing extension so fork installations load it by default.
 - Added a Telegram messaging gateway with BotFather setup, access allowlists, persistent per-chat/topic sessions, status replies, and shared chat commands.

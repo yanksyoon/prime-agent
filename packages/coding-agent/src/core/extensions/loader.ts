@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.js";
+import { CONFIG_DIR_NAME, getAgentDir, getPackageDir, isBunBinary } from "../../config.js";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
@@ -575,15 +575,20 @@ export async function discoverAndLoadExtensions(
 		}
 	};
 
-	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
+	// 1. Fork-bundled extensions shipped with the package. These are loaded by
+	// default alongside project and global extensions.
+	const bundledExtDir = path.join(getPackageDir(), "extensions");
+	addPaths(discoverExtensionsInDir(bundledExtDir));
+
+	// 2. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
 	const localExtDir = path.join(cwd, CONFIG_DIR_NAME, "extensions");
 	addPaths(discoverExtensionsInDir(localExtDir));
 
-	// 2. Global extensions: agentDir/extensions/
+	// 3. Global extensions: agentDir/extensions/
 	const globalExtDir = path.join(agentDir, "extensions");
 	addPaths(discoverExtensionsInDir(globalExtDir));
 
-	// 3. Explicitly configured paths
+	// 4. Explicitly configured paths
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, cwd);
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {

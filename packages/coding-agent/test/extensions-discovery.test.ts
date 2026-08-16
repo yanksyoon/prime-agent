@@ -13,12 +13,14 @@ describe("extensions discovery", () => {
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ext-test-"));
+		process.env.PI_PACKAGE_DIR = tempDir;
 		extensionsDir = path.join(tempDir, "extensions");
 		fs.mkdirSync(extensionsDir);
 	});
 
 	afterEach(() => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
+		delete process.env.PI_PACKAGE_DIR;
 	});
 
 	const extensionCode = `
