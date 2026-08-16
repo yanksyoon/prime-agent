@@ -10,6 +10,7 @@ import { AuthStorage } from "./auth-storage.js";
 import type { AgentAutonomousConfig } from "./autonomous.js";
 import type { AgentRlmHeartbeatController } from "./cron-jobs.js";
 import { createHerdrAgentStateExtension } from "./extensions/builtin/herdr-agent-state.js";
+import jiraTimeExtension from "./extensions/builtin/jira-time.js";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { McpManager } from "./mcp/mcp-manager.js";
 import { ModelRegistry } from "./model-registry.js";
@@ -203,7 +204,7 @@ export async function createAgentSessionServices(
 	const skipHerdrReporter = options.noBuiltinHerdrReporter || options.resourceLoaderOptions?.noExtensions;
 	const builtinExtensionFactories = skipHerdrReporter
 		? []
-		: [createHerdrAgentStateExtension(() => resourceLoader.getLoadedExtensionPaths())];
+		: [createHerdrAgentStateExtension(() => resourceLoader.getLoadedExtensionPaths()), jiraTimeExtension];
 	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		extensionFactories: [...builtinExtensionFactories, ...userExtensionFactories],
