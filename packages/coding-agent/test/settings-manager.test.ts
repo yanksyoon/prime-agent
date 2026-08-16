@@ -2,9 +2,29 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SettingsManager } from "../src/core/settings-manager.js";
+import { DEFAULT_MEMORY_CAPTURE_MODE, SettingsManager } from "../src/core/settings-manager.js";
 
 describe("SettingsManager", () => {
+	describe("external memory", () => {
+		it("defaults capture to explicit mode", () => {
+			expect(DEFAULT_MEMORY_CAPTURE_MODE).toBe("explicit");
+			const manager = SettingsManager.inMemory({
+				memory: { enabled: true, provider: "graphiti" },
+			});
+			expect(manager.getGlobalSettings().memory?.captureMode ?? DEFAULT_MEMORY_CAPTURE_MODE).toBe("explicit");
+		});
+
+		it("preserves provider configuration", () => {
+			const manager = SettingsManager.inMemory({
+				memory: { enabled: true, provider: "graphiti", endpoint: "http://localhost:8000" },
+			});
+			expect(manager.getGlobalSettings().memory).toEqual({
+				enabled: true,
+				provider: "graphiti",
+				endpoint: "http://localhost:8000",
+			});
+		});
+	});
 	const testDir = join(process.cwd(), "test-settings-tmp");
 	const agentDir = join(testDir, "agent");
 	const projectDir = join(testDir, "project");

@@ -234,6 +234,36 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 |---------|------|---------|-------------|
 | `markdown.codeBlockIndent` | string | `"  "` | Indentation for code blocks |
 
+### External Memory
+
+External memory is opt-in. When enabled, the default capture mode is **explicit**: memory is written only when the agent invokes the memory tool. Other capture modes can be selected as the Graphiti integration matures.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `memory.enabled` | boolean | `false` | Enable an external memory provider |
+| `memory.provider` | string | - | External provider (`"graphiti"`) |
+| `memory.captureMode` | string | `"explicit"` | `"explicit"`, `"session-end"`, or `"turn"` |
+| `memory.endpoint` | string | - | Graphiti service endpoint |
+| `memory.workspace` | string | - | Provider namespace |
+| `memory.maxRecallTokens` | number | `1200` | Maximum memory context injected into a response |
+| `memory.includeToolOutput` | boolean | `false` | Include tool output during automatic capture |
+
+Example:
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "provider": "graphiti",
+    "captureMode": "explicit",
+    "endpoint": "http://localhost:8000",
+    "workspace": "prime-agent"
+  }
+}
+```
+
+The explicit mode is designed to minimize token use and avoid storing noisy or sensitive tool output.
+
 ### Resources
 
 These settings define where to load extensions, skills, prompts, and themes from.

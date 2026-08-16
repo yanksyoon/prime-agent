@@ -27,6 +27,21 @@ export interface AutoRefineSettings {
 	cooldownMs?: number; // default: 20 minutes
 }
 
+/** External long-term memory integration settings. */
+export type MemoryCaptureMode = "explicit" | "session-end" | "turn";
+
+export interface MemorySettings {
+	enabled?: boolean; // default: false
+	provider?: "graphiti";
+	captureMode?: MemoryCaptureMode; // default: "explicit"
+	endpoint?: string; // Graphiti service endpoint
+	workspace?: string; // provider namespace
+	maxRecallTokens?: number; // default: 1200
+	includeToolOutput?: boolean; // default: false
+}
+
+export const DEFAULT_MEMORY_CAPTURE_MODE: MemoryCaptureMode = "explicit";
+
 export interface ProviderRetrySettings {
 	timeoutMs?: number; // SDK/provider request timeout in milliseconds
 	maxRetries?: number; // SDK/provider retry attempts
@@ -135,6 +150,7 @@ export interface Settings {
 	theme?: string;
 	compaction?: CompactionSettings;
 	autoRefine?: AutoRefineSettings;
+	memory?: MemorySettings;
 	agentTraces?: AgentTracesSettings;
 	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
