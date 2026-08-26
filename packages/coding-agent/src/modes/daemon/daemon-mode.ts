@@ -96,9 +96,10 @@ import {
 	type IdleEvictionMinutes,
 	type SessionPassivationSnapshot,
 } from "../../core/session-action-store.js";
-import { deleteSessionFile } from "../../core/session-file-actions.js";
+import { deleteSessionArtifacts, deleteSessionFile } from "../../core/session-file-actions.js";
 import { acquireSessionLease, canonicalSessionPath, type SessionLease } from "../../core/session-lease.js";
 import {
+	getSessionArtifactPathForFile,
 	readSessionInfo,
 	resolveSessionRlmDepth,
 	type SessionInfo,
@@ -174,6 +175,7 @@ import {
 	type DaemonSocketIdentity,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
+	normalizeSocketPath,
 	prepareDaemonSocketPath,
 	restrictDaemonSocketPath,
 } from "./daemon-socket.js";
@@ -274,16 +276,20 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_state",
 	"get_connection_state",
 	"get_messages",
+	"get_rlm_children",
 	"get_session_stats",
 	"get_context_tree",
 	"get_commands",
 	"get_resource_snapshot",
+	"replace_acp_mcp_servers",
 	"get_model_catalog",
 	"get_available_models",
 	"get_queue",
 	"mutate_queued_message",
 	"clear_queue",
 	"abort_and_clear_queue",
+	"acquire_session_input_pause",
+	"release_session_input_pause",
 	"cron_list",
 	"heartbeats_list",
 	"heartbeat_manage",
@@ -441,25 +447,24 @@ class RuntimeOpenCancelledError extends Error {}
 class BoundSessionUnavailableError extends Error {}
 
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
-	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
+	const socketPath = normalizeSocketPath(options.socketPath ?? defaultDaemonSocketPath());
 	const daemon = new AgentDaemon(socketPath, options);
 	await daemon.start();
 	return new Promise(() => {});
-}
-
-export function isTerminalRemoteAgentMessageError(error: unknown): error is Error {
-	return (
-		error instanceof Error &&
-		(error.message.startsWith("Unknown active session:") ||
-			error.message.startsWith("Ambiguous") ||
-			error.message === AGENT_FAMILY_REACH_ERROR)
-	);
 }
 
 export class AgentDaemon {
 	private server?: Server;
 	private shuttingDown = false;
 	private readonly updateRestartQueuePauses = new Map<string, { release(): void }>();
+	private readonly sessionInputPauses = new Map<
+		string,
+		{ activeSessionId: string; owner: DaemonSocketClient; leaseKey: string; pause: { release(): void } }
+	>();
+	private readonly acpMcpOwners = new Map<
+		string,
+		{ client: DaemonSocketClient; ownerId: string; serverNames: string[]; release?: Promise<void> }
+	>();
 	private readonly mutationDrain = new MutationDrainLatch();
 	private updateRestart?: {
 		id: symbol;
@@ -662,8 +667,13 @@ export class AgentDaemon {
 		this.startSupervisorMonitor();
 	}
 
+	private supervisorSocketPathFromEnv(): string | undefined {
+		const raw = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+		return raw ? normalizeSocketPath(raw) : undefined;
+	}
+
 	private startSupervisorMonitor(): void {
-		const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+		const supervisorSocketPath = this.supervisorSocketPathFromEnv();
 		if (!this.options.worker || !supervisorSocketPath) {
 			return;
 		}
@@ -953,12 +963,7 @@ export class AgentDaemon {
 	 * ledger seed source has its own equivalent reader).
 	 */
 	private legacyRlmSubagentRegistryPath(parentSessionFile: string, parentSessionId: string): string {
-		return join(
-			dirname(dirname(parentSessionFile)),
-			"session-artifacts",
-			parentSessionId,
-			RLM_SUBAGENT_REGISTRY_FILE,
-		);
+		return join(getSessionArtifactPathForFile(parentSessionFile, parentSessionId), RLM_SUBAGENT_REGISTRY_FILE);
 	}
 
 	private async readLegacyRlmSubagentRegistry(
@@ -1091,8 +1096,12 @@ export class AgentDaemon {
 				sessionFile: parentFile,
 			});
 		} else if (edges.length > 0) {
-			// Only a tombstoned edge: the topology tombstone is already durable
-			// (the display tombstone was written before it), nothing to re-append.
+			// Only tombstoned edges: the tombstones are already durable, nothing
+			// to re-append. A prior deletion may have crashed before its artifact
+			// sweep, so retry it here.
+			for (const tombstoned of edges) {
+				await this.deleteRlmSubagentArtifacts(childId, tombstoned.child);
+			}
 			return;
 		} else {
 			// No edge at all. A pre-ledger child the seed missed may still exist
@@ -1148,6 +1157,20 @@ export class AgentDaemon {
 		// dual-write era it has no other writer to fall back on, so a failed
 		// append is a failed deletion.
 		await this.rlmSpawnLedger().appendDelete({ childId, child: entry.sessionFile, reason });
+		// Deletion boundary: transcript + display tombstone are the durable
+		// record and stay; the nested artifact dir is a runtime cache and goes.
+		await this.deleteRlmSubagentArtifacts(childId, entry.sessionFile);
+	}
+
+	/** Best-effort artifact-dir removal: cache cleanup must never fail a deletion. */
+	private async deleteRlmSubagentArtifacts(childId: string, childSessionFile: string): Promise<void> {
+		try {
+			await deleteSessionArtifacts(childSessionFile);
+		} catch (error) {
+			this.log(
+				`failed to remove artifact dir for deleted RLM subagent ${childId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	/**
@@ -1469,6 +1492,7 @@ export class AgentDaemon {
 	}
 
 	private refreshReplacedSessionState(state: ActiveSessionState): void {
+		this.acpMcpOwners?.delete(state.activeSessionId);
 		for (const client of state.clients) {
 			this.abortSideQuestionsFor(client, state.activeSessionId);
 		}
@@ -2451,10 +2475,21 @@ export class AgentDaemon {
 						candidate.runtime.metadata.rlmChildId === options.id &&
 						candidate.runtime.session === runtime.session,
 				);
-				if (state) {
-					await this.closeSession(state, status === "cancelled" ? "killed" : "completed");
-				} else {
-					await runtime.session.disposeAsync();
+				try {
+					if (state) {
+						await this.closeSession(state, status === "cancelled" ? "killed" : "completed");
+					} else {
+						await runtime.session.disposeAsync();
+					}
+				} finally {
+					// Sweep even when teardown throws (see deleteRlmSubagentRuntime);
+					// never throws, so it cannot mask a teardown error.
+					if (status === "cancelled" && deletionError === undefined) {
+						const childSessionFile = runtime.session?.sessionFile;
+						if (childSessionFile) {
+							await this.deleteRlmSubagentArtifacts(options.id, childSessionFile);
+						}
+					}
 				}
 				if (deletionError !== undefined) throw deletionError;
 			},
@@ -2495,22 +2530,36 @@ export class AgentDaemon {
 						: undefined;
 				const childSessionFile =
 					persisted?.sessionFile ?? state?.runtime.session.sessionFile ?? legacyFallback?.sessionFile;
-				// Persist the deletion boundary before tearing down the runtime. As with a
-				// resident child, deletion keeps its transcript and artifact tree on disk.
+				// Persist the deletion boundary before tearing down the runtime.
 				await this.recordRlmSubagentDeletion(parentState, childId);
 				const staleSession = state && session && state.runtime.session !== session ? session : undefined;
 				try {
-					if (state) {
-						await this.closeSession(state, "killed", false);
-					} else {
-						await session?.disposeAsync();
+					try {
+						if (state) {
+							await this.closeSession(state, "killed", false);
+						} else {
+							await session?.disposeAsync();
+						}
+					} finally {
+						await staleSession?.disposeAsync();
 					}
 				} finally {
-					await staleSession?.disposeAsync();
-				}
-				// A killed close can join a passivation close that already skipped killed cleanup.
-				if (childSessionFile) {
-					this.cancelScheduledJobsForSessionFile(childSessionFile);
+					// Runs even when teardown throws: the jobs-cancel rewrite and the
+					// kernel dispose's final snapshot flush may have already happened,
+					// resurrecting the artifact dir swept in recordRlmSubagentDeletion.
+					// A killed close can join a passivation close that already skipped
+					// killed cleanup. Neither step may throw here: a jobs-store error
+					// would mask the teardown error and skip the sweep.
+					if (childSessionFile) {
+						try {
+							this.cancelScheduledJobsForSessionFile(childSessionFile);
+						} catch (error) {
+							this.log(
+								`failed to cancel scheduled jobs for deleted RLM subagent ${childId}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+						await this.deleteRlmSubagentArtifacts(childId, childSessionFile);
+					}
 				}
 			},
 			disposeRlmSubagentRuntimes: async () => {
@@ -3302,12 +3351,17 @@ export class AgentDaemon {
 			socket.off("close", cleanup);
 			socket.off("error", cleanup);
 			this.clearClientCatchupRetry(client);
+			for (const [pauseId, entry] of this.sessionInputPauses) {
+				if (entry.owner !== client) continue;
+				entry.pause.release();
+				this.sessionInputPauses.delete(pauseId);
+			}
 			this.detachClient(client);
 			client.detachInput();
 			this.clients.delete(client);
 			const wasAuthenticated = client.authenticated === true;
 			this.revokeSupervisorClaim(client);
-			const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+			const supervisorSocketPath = this.supervisorSocketPathFromEnv();
 			if (this.options.worker && wasAuthenticated && supervisorSocketPath) {
 				this.scheduleSupervisorAvailabilityCheck(supervisorSocketPath, 100);
 			}
@@ -3905,8 +3959,18 @@ export class AgentDaemon {
 			case "detach": {
 				if (command.activeSessionId) {
 					const state = this.getSessionState(command.activeSessionId);
+					for (const [pauseId, entry] of this.sessionInputPauses) {
+						if (entry.owner !== client || entry.activeSessionId !== command.activeSessionId) continue;
+						entry.pause.release();
+						this.sessionInputPauses.delete(pauseId);
+					}
 					this.detachClientFromSession(client, state);
 				} else {
+					for (const [pauseId, entry] of this.sessionInputPauses) {
+						if (entry.owner !== client) continue;
+						entry.pause.release();
+						this.sessionInputPauses.delete(pauseId);
+					}
 					this.detachClient(client);
 				}
 				return success(command.id, "detach");
@@ -4001,6 +4065,7 @@ export class AgentDaemon {
 					});
 				}
 				if (admission.status === "owned") {
+					if (command.cancelOwned) admission.controller?.abort();
 					return success(command.id, command.type, {
 						status: "owned" as const,
 					});
@@ -4350,6 +4415,38 @@ export class AgentDaemon {
 				});
 			}
 
+			case "acquire_session_input_pause": {
+				const existing = [...this.sessionInputPauses].find(
+					([, entry]) =>
+						entry.owner === client &&
+						entry.activeSessionId === command.activeSessionId &&
+						entry.leaseKey === command.leaseKey,
+				);
+				if (existing) {
+					return success(command.id, "acquire_session_input_pause", { pauseId: existing[0] });
+				}
+				const state = this.getSessionState(command.activeSessionId);
+				const pauseId = randomUUID();
+				this.sessionInputPauses.set(pauseId, {
+					activeSessionId: command.activeSessionId,
+					owner: client,
+					leaseKey: command.leaseKey,
+					pause: state.runtime.session.acquireSessionInputPause(),
+				});
+				return success(command.id, "acquire_session_input_pause", { pauseId });
+			}
+
+			case "release_session_input_pause": {
+				const entry = this.sessionInputPauses.get(command.pauseId);
+				if (!entry) return success(command.id, "release_session_input_pause");
+				if (entry.owner !== client || entry.activeSessionId !== command.activeSessionId) {
+					throw new Error(`Session input pause is owned by another client: ${command.pauseId}`);
+				}
+				this.sessionInputPauses.delete(command.pauseId);
+				entry.pause.release();
+				return success(command.id, "release_session_input_pause");
+			}
+
 			case "wait_for_idle": {
 				const state = this.getSessionState(command.activeSessionId);
 				await state.runtime.session.waitForIdle();
@@ -4361,7 +4458,9 @@ export class AgentDaemon {
 				return success(
 					command.id,
 					"wait_for_headless_completion",
-					await waitForHeadlessCompletion(state.runtime.session),
+					await waitForHeadlessCompletion(state.runtime.session, {
+						waitForRlmQuiescence: command.waitForRlmQuiescence,
+					}),
 				);
 			}
 
@@ -4386,6 +4485,14 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_messages", {
 					messages: state.runtime.session.messages,
+				});
+			}
+
+			case "get_rlm_children": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_rlm_children", {
+					children: state.runtime.session.getRlmChildSnapshots(),
+					eventSequence: state.lastEventSequence,
 				});
 			}
 
@@ -4414,6 +4521,83 @@ export class AgentDaemon {
 					"get_resource_snapshot",
 					createAgentConnectionResourceSnapshot(state.runtime.session),
 				);
+			}
+
+			case "replace_acp_mcp_servers": {
+				if (!command.ownerId) throw new Error("ACP MCP owner id is required");
+				const state = this.getSessionState(command.activeSessionId);
+				if (!state.clients.has(client)) throw new Error("Daemon client is not attached to this session");
+				if (command.servers.length > 0 && state.runtime.session.isStreaming) {
+					throw new Error("Cannot replace ACP MCP servers while the agent is running");
+				}
+				const commandPause =
+					command.servers.length > 0 ? state.runtime.session.acquireSessionInputPause() : undefined;
+				try {
+					let currentOwner = this.acpMcpOwners.get(state.activeSessionId);
+					if (currentOwner?.release) {
+						await currentOwner.release.catch(() => undefined);
+						currentOwner = this.acpMcpOwners.get(state.activeSessionId);
+					}
+					const ownedByClient = currentOwner?.client === client && currentOwner.ownerId === command.ownerId;
+					if (command.servers.length === 0 && !ownedByClient) {
+						return success(command.id, "replace_acp_mcp_servers");
+					}
+					if (command.servers.length === 0) {
+						if (!currentOwner) return success(command.id, "replace_acp_mcp_servers");
+						const release = state.runtime.session.releaseAcpMcpServers(command.ownerId, currentOwner.serverNames);
+						currentOwner.release = release;
+						try {
+							await release;
+						} catch (error) {
+							currentOwner.release = undefined;
+							throw error;
+						}
+						if (this.acpMcpOwners.get(state.activeSessionId) === currentOwner) {
+							this.acpMcpOwners.delete(state.activeSessionId);
+						}
+						return success(command.id, "replace_acp_mcp_servers");
+					}
+
+					if (currentOwner && !ownedByClient) {
+						throw new Error("ACP MCP configuration is owned by another daemon client");
+					}
+					const claim = {
+						client,
+						ownerId: command.ownerId,
+						serverNames: [
+							...new Set([
+								...(currentOwner?.serverNames ?? []),
+								...command.servers.map((server) => server.name),
+							]),
+						],
+					};
+					this.acpMcpOwners.set(state.activeSessionId, claim);
+					const rollback = async (): Promise<void> => {
+						try {
+							await state.runtime.session.releaseAcpMcpServers(command.ownerId, claim.serverNames);
+						} catch (error) {
+							this.log(`failed to roll back ACP MCP config: ${String(error)}`);
+						}
+						if (this.acpMcpOwners.get(state.activeSessionId) === claim) {
+							this.acpMcpOwners.delete(state.activeSessionId);
+						}
+					};
+					try {
+						await withClientEnv(state.clientEnv, async () =>
+							state.runtime.session.replaceAcpMcpServers(command.servers, command.ownerId),
+						);
+					} catch (error) {
+						await rollback();
+						throw error;
+					}
+					if (!state.clients.has(client) || this.acpMcpOwners.get(state.activeSessionId) !== claim) {
+						await rollback();
+						throw new Error("Daemon client detached during ACP MCP replacement");
+					}
+					return success(command.id, "replace_acp_mcp_servers");
+				} finally {
+					commandPause?.release();
+				}
 			}
 
 			case "get_available_models": {
@@ -4896,7 +5080,7 @@ export class AgentDaemon {
 				sequence: state.lastEventSequence,
 			},
 			...(parent ? { parent } : {}),
-			...(children.length > 0 ? { children } : {}),
+			children,
 		};
 	}
 
@@ -5365,7 +5549,7 @@ export class AgentDaemon {
 	}
 
 	private async setStateSessionNameViaSupervisor(state: ActiveSessionState, name: string): Promise<void> {
-		const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+		const supervisorSocketPath = this.supervisorSocketPathFromEnv();
 		if (!this.options.worker || !supervisorSocketPath) {
 			return this.setStateSessionName(state, name);
 		}
@@ -5716,7 +5900,7 @@ export class AgentDaemon {
 		targetSelector: string,
 		message: string,
 	): Promise<AgentSessionMessageReceipt> {
-		const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+		const supervisorSocketPath = this.supervisorSocketPathFromEnv();
 		if (!supervisorSocketPath) {
 			throw new Error(`Unknown active session: ${targetSelector}`);
 		}
@@ -5828,6 +6012,18 @@ export class AgentDaemon {
 	}
 
 	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {
+		const acpMcpOwner = this.acpMcpOwners.get(state.activeSessionId);
+		if (acpMcpOwner?.client === client && !acpMcpOwner.release) {
+			const release = state.runtime.session.releaseAcpMcpServers(acpMcpOwner.ownerId, acpMcpOwner.serverNames);
+			acpMcpOwner.release = release;
+			void release
+				.catch((error) => this.log(`failed to release detached ACP MCP config: ${String(error)}`))
+				.finally(() => {
+					if (this.acpMcpOwners.get(state.activeSessionId) === acpMcpOwner) {
+						this.acpMcpOwners.delete(state.activeSessionId);
+					}
+				});
+		}
 		this.abortSideQuestionsFor(client, state.activeSessionId);
 		abortClientSnapshotStreaming(client, state.activeSessionId);
 		detachClientFromActiveSession(client, state);
@@ -5835,6 +6031,7 @@ export class AgentDaemon {
 			type: "session_detached",
 			activeSessionId: state.activeSessionId,
 		});
+		// Discard an abandoned empty draft rather than retaining an empty session file.
 		// Abandoned new-chat: discard it so it doesn't linger in memory or leave an
 		// empty file. Replaces the old DeferredAgentConnection.
 		if (this.isDiscardableDraft(state)) {
@@ -6351,6 +6548,7 @@ export class AgentDaemon {
 			removeDaemonClientSessionCapabilities(client, state.activeSessionId);
 		}
 		state.clients.clear();
+		this.acpMcpOwners.delete(state.activeSessionId);
 		this.sessions.delete(state.activeSessionId);
 		if (isEmptyDraftSession) {
 			const sessionFile = state.runtime.session.sessionFile;

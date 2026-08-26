@@ -9,14 +9,13 @@
 </p>
 
 <h3 align="center">
-Prime Agent: A Self-Improving RLM Agent
+Prime Agent: A Self-Improving RLM Harness
 </h3>
 
 <p align="center">
   <a href="packages/coding-agent/docs/index.md">Documentation</a> &bull;
   <a href="https://github.com/PrimeIntellect-ai/verifiers">Verifiers</a> &bull;
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a> &bull;
-  <a href="https://github.com/badlogic/pi-mono">pi-mono</a>
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a>
 </p>
 
 <p align="center">
@@ -25,6 +24,15 @@ Prime Agent: A Self-Improving RLM Agent
   </a>
   <a href="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/build-binaries.yml">
     <img src="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/build-binaries.yml/badge.svg" alt="Build Binaries" />
+  </a>
+  <a href="https://arxiv.org/abs/2608.23552">
+    <img src="https://img.shields.io/badge/arXiv-2608.23552-b31b1b.svg" alt="arXiv" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/104249?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-104249" target="_blank" rel="noopener noreferrer">
+    <img src="https://trendshift.io/api/badge/repositories/104249" alt="PrimeIntellect-ai%2Fprime-agent | Trendshift" width="250" height="55" />
   </a>
 </p>
 
@@ -114,3 +122,18 @@ Our agent and TUI is built on top of [`pi`](https://github.com/earendil-works/pi
 ## License
 
 Prime Agent is fully open source and released under the [MIT License](LICENSE).
+
+## Citation
+
+If you use this codebase in your research, please cite Prime Agent:
+
+```bibtex
+@article{karten2026prime,
+  title={Prime Agent: A Self-Improving RLM Harness},
+  author={Karten, Seth and Zhang, Alex L. and Thomas, Kevin and Müller, Sebastian and Bakouch, Elie and Auras, Daniel and Senghaas, Mika and Obeid, Fares and Dunas, Konstantin and Hagemann, Johannes and Jaghouar, Sami},
+  journal={arXiv preprint arXiv:2608.23552},
+  year={2026}
+}
+```
+
+Available at [https://arxiv.org/abs/2608.23552](https://arxiv.org/abs/2608.23552).

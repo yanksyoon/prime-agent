@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -179,6 +180,102 @@ describe("daemon mode helpers", () => {
 		expect(firstResolve).toHaveBeenCalledWith({ cancelled: true });
 		expect(secondResolve).toHaveBeenCalledWith({ cancelled: true });
 		expect(secondClient.attachedActiveSessionIds.has("active")).toBe(false);
+	});
+
+	it("releases owner-scoped ACP MCP config when its daemon client detaches", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-acp-owner.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const owner = makeClient("owner", "active");
+		const other = makeClient("other", "active");
+		const replaceAcpMcpServers = vi.fn();
+		const releaseAcpMcpServers = vi.fn(async () => {});
+		const state = makeState("active");
+		state.clientEnv = {};
+		state.clients.add(owner);
+		state.clients.add(other);
+		state.extensionUiRequests = new Map();
+		state.runtime = {
+			...state.runtime,
+			session: {
+				isStreaming: false,
+				replaceAcpMcpServers,
+				releaseAcpMcpServers,
+				acquireSessionInputPause: () => ({ release: vi.fn() }),
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonOutbound | undefined>;
+			detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void;
+			write: ReturnType<typeof vi.fn>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+		internals.write = vi.fn();
+
+		replaceAcpMcpServers.mockImplementationOnce(() => {
+			throw new Error("replacement failed");
+		});
+		await expect(
+			internals.handleCommand(owner, {
+				type: "replace_acp_mcp_servers",
+				activeSessionId: state.activeSessionId,
+				ownerId: "owner-token",
+				servers: [{ name: "failed", type: "http", url: "https://failed.example/mcp", headers: {} }],
+			}),
+		).rejects.toThrow("replacement failed");
+		expect(releaseAcpMcpServers).toHaveBeenLastCalledWith("owner-token", ["failed"]);
+
+		await internals.handleCommand(owner, {
+			type: "replace_acp_mcp_servers",
+			activeSessionId: state.activeSessionId,
+			ownerId: "owner-token",
+			servers: [{ name: "task", type: "http", url: "https://task.example/mcp", headers: {} }],
+		});
+		const releaseCount = releaseAcpMcpServers.mock.calls.length;
+		(state.runtime.session as unknown as { isStreaming: boolean }).isStreaming = true;
+		await expect(
+			internals.handleCommand(owner, {
+				type: "replace_acp_mcp_servers",
+				activeSessionId: state.activeSessionId,
+				ownerId: "owner-token",
+				servers: [{ name: "next", type: "http", url: "https://next.example/mcp", headers: {} }],
+			}),
+		).rejects.toThrow("while the agent is running");
+		expect(releaseAcpMcpServers).toHaveBeenCalledTimes(releaseCount);
+		(state.runtime.session as unknown as { isStreaming: boolean }).isStreaming = false;
+
+		await expect(
+			internals.handleCommand(other, {
+				type: "replace_acp_mcp_servers",
+				activeSessionId: state.activeSessionId,
+				ownerId: "other-token",
+				servers: [{ name: "other", type: "http", url: "https://other.example/mcp", headers: {} }],
+			}),
+		).rejects.toThrow("owned by another daemon client");
+
+		internals.detachClientFromSession(owner, state);
+		expect(releaseAcpMcpServers).toHaveBeenCalledWith("owner-token", ["task"]);
+
+		await internals.handleCommand(other, {
+			type: "replace_acp_mcp_servers",
+			activeSessionId: state.activeSessionId,
+			ownerId: "other-token",
+			servers: [{ name: "other", type: "http", url: "https://other.example/mcp", headers: {} }],
+		});
+		expect(replaceAcpMcpServers).toHaveBeenLastCalledWith(
+			[{ name: "other", type: "http", url: "https://other.example/mcp", headers: {} }],
+			"other-token",
+		);
+
+		await internals.handleCommand(other, {
+			type: "replace_acp_mcp_servers",
+			activeSessionId: state.activeSessionId,
+			ownerId: "other-token",
+			servers: [],
+		});
+		expect(releaseAcpMcpServers).toHaveBeenLastCalledWith("other-token", ["other"]);
 	});
 
 	it("cancels pending extension UI requests directly", () => {
@@ -7396,6 +7493,136 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("removes a deleted child's nested artifact dir but keeps its transcript and display tombstone", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-artifact-cleanup-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			writeFileSync(join(fixture.childArtifactDir, "kernel-state.dill"), "payload");
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const host = internals.createSubagentRuntimeHost(parentState);
+			await host.deleteRlmSubagentRuntime(fixture.childId);
+
+			// Runtime cache gone; transcript + display tombstone (durable record) stay.
+			expect(existsSync(fixture.childArtifactDir)).toBe(false);
+			expect(existsSync(fixture.childSessionFile)).toBe(true);
+			// Depth-2 boundary: deleting a child never touches descendant transcripts.
+			expect(existsSync(fixture.grandchildSessionFile)).toBe(true);
+			const display = JSON.parse(readFileSync(join(fixture.childSessionDir, "rlm-subagent.json"), "utf8")) as {
+				status: string;
+			};
+			expect(display).toMatchObject({ status: "deleted" });
+
+			// Retry heal: a crash between the tombstone writes and the sweep (or a
+			// pre-cleanup build) leaves the dir behind; a retried delete of the
+			// tombstoned child sweeps it again.
+			mkdirSync(fixture.childArtifactDir, { recursive: true });
+			writeFileSync(join(fixture.childArtifactDir, "kernel-state.dill"), "leftover");
+			await host.deleteRlmSubagentRuntime(fixture.childId);
+			expect(existsSync(fixture.childArtifactDir)).toBe(false);
+			expect(existsSync(fixture.childSessionFile)).toBe(true);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	// chmod-based read-only dirs don't block root, so skip when running as uid 0.
+	it.skipIf(process.getuid?.() === 0)("does not fail a deletion when the artifact dir cannot be removed", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-artifact-rm-failure-"));
+		let lockedRoot: string | undefined;
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const nestedArtifactsRoot = resolve(fixture.childArtifactDir, "..");
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			chmodSync(nestedArtifactsRoot, 0o555);
+			lockedRoot = nestedArtifactsRoot;
+
+			// Cache cleanup is best-effort: the rm failure must not surface.
+			await internals.createSubagentRuntimeHost(parentState).deleteRlmSubagentRuntime(fixture.childId);
+
+			expect(existsSync(fixture.childArtifactDir)).toBe(true);
+			// Both tombstones are still durable.
+			const display = JSON.parse(readFileSync(join(fixture.childSessionDir, "rlm-subagent.json"), "utf8")) as {
+				status: string;
+			};
+			expect(display).toMatchObject({ status: "deleted" });
+			const ledgerFile = readdirSync(join(tempDir, "rlm-ledger")).find((name) => name.endsWith(".jsonl"));
+			if (!ledgerFile) throw new Error("Missing RLM ledger file");
+			const ledgerOps = readFileSync(join(tempDir, "rlm-ledger", ledgerFile), "utf8")
+				.trim()
+				.split(/\r?\n/)
+				.map((line) => JSON.parse(line) as { op: string; childId?: string });
+			expect(ledgerOps.some((record) => record.op === "delete" && record.childId === fixture.childId)).toBe(true);
+		} finally {
+			if (lockedRoot) chmodSync(lockedRoot, 0o755);
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("still sweeps and resolves when scheduled-job cancellation throws", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-artifact-cancel-throw-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			writeFileSync(join(fixture.childArtifactDir, "kernel-state.dill"), "payload");
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+				cancelScheduledJobsForSessionFile(sessionFile: string): void;
+			};
+			internals.cancelScheduledJobsForSessionFile = vi.fn(() => {
+				throw new Error("corrupt scheduled-jobs.json");
+			});
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+
+			// Jobs-store bookkeeping must not fail the deletion or skip the sweep.
+			await internals.createSubagentRuntimeHost(parentState).deleteRlmSubagentRuntime(fixture.childId);
+
+			expect(internals.cancelScheduledJobsForSessionFile).toHaveBeenCalledOnce();
+			expect(existsSync(fixture.childArtifactDir)).toBe(false);
+			expect(existsSync(fixture.childSessionFile)).toBe(true);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("sweeps the artifact dir even when child teardown throws", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-artifact-teardown-throw-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			// A dispose that flushes a fresh kernel snapshot (recreating the
+			// artifact dir) and then fails.
+			const throwingSession = {
+				disposeAsync: vi.fn(async () => {
+					mkdirSync(fixture.childArtifactDir, { recursive: true });
+					writeFileSync(join(fixture.childArtifactDir, "kernel-state.dill"), "flushed");
+					throw new Error("dispose failed");
+				}),
+			} as unknown as ActiveSessionState["runtime"]["session"];
+
+			await expect(
+				internals.createSubagentRuntimeHost(parentState).deleteRlmSubagentRuntime(fixture.childId, throwingSession),
+			).rejects.toThrow("dispose failed");
+
+			expect(throwingSession.disposeAsync).toHaveBeenCalledOnce();
+			expect(existsSync(fixture.childArtifactDir)).toBe(false);
+			expect(existsSync(fixture.childSessionFile)).toBe(true);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("cancels scheduled jobs when deleting a pre-ledger legacy child without hydrating it", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-legacy-delete-jobs-"));
 		try {
@@ -8922,7 +9149,7 @@ describe("daemon mode helpers", () => {
 		},
 	);
 
-	it("cancels only pre-ownership prompt admission and cleans up its controller", async () => {
+	it("capability-gates cancellation after prompt ownership", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -8981,7 +9208,7 @@ describe("daemon mode helpers", () => {
 		).resolves.toMatchObject({ success: true, data: { status: "cancelled" } });
 		await vi.waitFor(() => expect(internals.promptAdmissions.size).toBe(0));
 
-		// Once ownership commits the same cancellation is a no-op.
+		// Old clients retain the pre-ownership-only behavior.
 		internals.parseCommandAndRegisterPromptAdmission(
 			client,
 			JSON.stringify({
@@ -9008,6 +9235,19 @@ describe("daemon mode helpers", () => {
 				admissionId: "admission-2",
 			}),
 		).resolves.toMatchObject({ success: true, data: { status: "owned" } });
+		expect(promptOptions?.signal?.aborted).toBe(false);
+
+		// New clients request the capability-gated session-owned cancellation.
+		await expect(
+			internals.handleCommand(client, {
+				id: "cancel-3",
+				type: "cancel_prompt_admission",
+				activeSessionId: state.activeSessionId,
+				admissionId: "admission-2",
+				cancelOwned: true,
+			}),
+		).resolves.toMatchObject({ success: true, data: { status: "owned" } });
+		expect(promptOptions?.signal?.aborted).toBe(true);
 		rejectPrompt?.(new Error("test cleanup"));
 	});
 
@@ -10001,6 +10241,7 @@ function makePersistedRlmDaemonFixture(
 		childId,
 		childSessionFile,
 		childSessionDir,
+		childArtifactDir,
 		grandchildId,
 		grandchildSessionFile,
 	};
